@@ -235,20 +235,26 @@ function computeCycle({cycle, now, txs, budget}){
   const totalDays  = Math.round((cycle.end-cycle.start)/DAY);
   const daysElapsed= isCurrent ? Math.max(1, Math.floor((now-cycle.start)/DAY)+1) : totalDays;
   const daysLeft   = isCurrent ? Math.max(1, totalDays-daysElapsed+1) : 0;
-  const curRate    = variableSpent/daysElapsed;
+  // Se il bilancio è iniziato a metà di questo mese, il ritmo si calcola solo sui giorni tracciati
+  const start      = budget.start || cycle.start;
+  const effStart   = start>cycle.start ? start : cycle.start;
+  const partial    = effStart>cycle.start;
+  const trackedDays= isCurrent ? Math.max(1, Math.floor((now-effStart)/DAY)+1) : Math.max(1, Math.round((cycle.end-effStart)/DAY));
+  const curRate    = variableSpent/trackedDays;
   // Ritmo "storico": media giornaliera delle spese variabili negli ultimi 3 mesi chiusi.
   // A inizio mese pochi giorni di dati sono rumorosi (basta un pieno): mescolo il ritmo attuale
   // con quello storico, che pesa come 10 giorni di dati e perde importanza man mano che il mese avanza.
   let histDays=0, histSpent=0;
   for(let i=1;i<=3;i++){
     const pc=shiftCycle(cycle,-i,payday);
+    if(pc.end<=start) break;                                   // mese precedente all'inizio del bilancio
+    const pStart = start>pc.start ? start : pc.start;
     const po=txs.filter(t=>t.type==="out"&&!t.fixedId&&inCycle(t,pc,payday));
-    const hadData=txs.some(t=>inCycle(t,pc,payday));
-    if(hadData){ histSpent+=po.reduce((a,t)=>a+t.amount,0); histDays+=Math.round((pc.end-pc.start)/DAY); }
+    histSpent+=po.reduce((a,t)=>a+t.amount,0); histDays+=Math.round((pc.end-pStart)/DAY);
   }
-  const histRate   = histDays? histSpent/histDays : null;
+  const histRate   = histDays>=7? histSpent/histDays : null;   // con meno di una settimana di storico non ha senso
   const PRIOR_DAYS = 10;
-  const dailyRate  = (isCurrent && histRate!=null) ? (curRate*daysElapsed + histRate*PRIOR_DAYS)/(daysElapsed+PRIOR_DAYS) : curRate;
+  const dailyRate  = (isCurrent && histRate!=null) ? (curRate*trackedDays + histRate*PRIOR_DAYS)/(trackedDays+PRIOR_DAYS) : curRate;
 
   const totalIncome = income + salaryPending;
   const available   = totalIncome - spent - pendingFixedTotal;      // cosa resta oggi, già tolte le fisse da pagare
@@ -266,7 +272,7 @@ function computeCycle({cycle, now, txs, budget}){
   const cats = Object.entries(byCat).map(([id,v])=>({...catOf(id),value:v})).sort((a,b)=>b.value-a.value);
 
   return {list, income, spent, salaryPending, expectedSalary, pendingFixed, pendingFixedTotal, variableSpent,
-          totalDays, daysElapsed, daysLeft, dailyRate, curRate, histRate, totalIncome, available, projected, perDay, verdict, cats, isCurrent};
+          totalDays, daysElapsed, daysLeft, trackedDays, partial, effStart, dailyRate, curRate, histRate, totalIncome, available, projected, perDay, verdict, cats, isCurrent};
 }
 
 // ─── UI di base ────────────────────────────────────────────────────────────
@@ -302,7 +308,7 @@ function TxRow({t,onDelete,onEdit}){
       <div style={{width:38,height:38,borderRadius:12,background:"var(--surface-2)",display:"grid",placeItems:"center",fontSize:18,flexShrink:0}}>{c.icon}</div>
       <div style={{flex:1,minWidth:0}}>
         <div style={{fontSize:14,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{t.note||c.label}</div>
-        <div style={{fontSize:11,color:"var(--text-faint)"}}>{fmtDate(t.date)} · {c.label}{t.fixedId?" · fissa":""}{t.source==="pdf"?" · 📄":""}</div>
+        <div style={{fontSize:11,color:"var(--text-faint)"}}>{fmtDate(t.date)} · {c.label}{t.fixedId?" · fissa":""}{t.source==="pdf"?" · 📄":t.source==="notifica"?" · 🔔":t.source==="lista"?" · 🛒":""}</div>
       </div>
       <div className="num" style={{fontWeight:700,fontSize:15,color:t.type==="in"?"var(--green)":"var(--text)"}}>{t.type==="in"?"+":"−"}{eur(t.amount)}</div>
       {onDelete && !fuel && <button aria-label="Elimina" onClick={e=>{e.stopPropagation();onDelete(t);}} style={{background:"none",border:"none",color:"var(--text-faint)",fontSize:16,padding:4}}>✕</button>}
@@ -435,6 +441,7 @@ function Movements({txs,budget,cycle,setCycle,onDelete,onEdit,onAdd,onImport}){
     <div className="fade" style={{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:12}}>
       <QuickActions onAdd={onAdd} onImport={onImport}/>
       <CycleNav cycle={cycle} setCycle={setCycle} payday={budget.payday}/>
+      {cycle.start<budget.start && <div style={{fontSize:12,color:"var(--text-dim)",background:"var(--surface-2)",border:"1px solid var(--border)",borderRadius:12,padding:"8px 12px"}}>{cycle.end<=budget.start?"📜 Mese precedente all'inizio del bilancio: qui vedi solo lo storico, non entra nei conti.":`📅 Il bilancio parte dal ${fmtDate(budget.start)}: i movimenti prima non entrano nei conti.`}</div>}
       <div style={{display:"flex",gap:8}}>
         {[["all","Tutti"],["out","Uscite"],["in","Entrate"]].map(([k,l])=>(
           <button key={k} onClick={()=>setFilter(k)} style={{...btnG,padding:"7px 14px",fontSize:13,background:filter===k?"var(--grad)":"var(--surface-2)",borderColor:filter===k?"transparent":"var(--border)"}}>{l}</button>
@@ -466,16 +473,222 @@ function CycleNav({cycle,setCycle,payday}){
   );
 }
 
+// ─── Lista della spesa ─────────────────────────────────────────────────────
+// Prodotti in users/{uid}/shopping/{id}; storico (frequenza, ultimo prezzo) in users/{uid}/meta/shoppingHistory
+const AISLES = [
+  {id:"surgelati", label:"Surgelati", icon:"🧊", re:/surgel|gelat|bastoncin|frozen|minestrone/i},
+  {id:"ortofrutta",label:"Frutta e verdura", icon:"🥦", re:/frutt|verdur|\bmel[ae]\b|banan|aranc|limon|insalat|lattug|pomodor|patat|cipoll|aglio|carot|zucchin|peperon|melanzan|fungh|kiwi|\bpere?\b|\buva\b|fragol|spinac|rucol|finocch|sedano|avocado|broccol|cavol|basilic|prezzemol|ananas|mandarin|pesch|albicocc|cocomer|melone/i},
+  {id:"carne",     label:"Carne e pesce", icon:"🥩", re:/carne|poll|tacchin|manzo|maial|salsicc|hamburger|macinat|bistecc|fettin|cotolet|pesce|salmon|merluzz|gamber|calamar|cozze|vongol|wurstel|arrost|spezzatin/i},
+  {id:"salumi",    label:"Salumi e formaggi", icon:"🧀", re:/prosciutt|salam|mortadell|bresaol|speck|coppa|formagg|parmigian|grana|mozzarell|ricott|stracchin|pecorin|gorgonzol|scamorz|emmental|fontina|crescenz|philadelphia|sottilett/i},
+  {id:"latticini", label:"Latte, uova, yogurt", icon:"🥛", re:/latte|yogurt|yoghurt|burro|panna|uov[ao]|kefir|skyr/i},
+  {id:"colazione", label:"Pane e colazione", icon:"🥐", re:/\bpane\b|panin|piadin|grissin|cracker|fette bisc|biscott|cereal|brioche|cornett|merendin|marmellat|confettur|nutella|caff[eè]|\bth?[eè]\b|tisan|miele|muesli|fiocchi d.avena/i},
+  {id:"bevande",   label:"Bevande", icon:"🥤", re:/acqua|birr|vino|coca|aranciata|succo|bibit|spuma|gassos|energy|prosecco|spritz|chinott/i},
+  {id:"dispensa",  label:"Dispensa", icon:"🍝", re:/pasta|spaghett|penne|fusill|riso|farin|zuccher|\bsale\b|olio|acet|passat|pelati|sugo|pesto|tonno|legum|ceci|fagiol|lenticch|pisell|mais|spezie|pepe|origano|dado|brodo|maionese|ketchup|senape|lievit|pangrattat|cioccolat|patatine|snack|noci|mandorl|crackers/i},
+  {id:"casa",      label:"Casa e igiene", icon:"🧴", re:/detersiv|sapon|shampoo|bagnoschiuma|balsamo|dentifric|spazzolin|carta igien|scottex|carta (da )?cucina|tovagliol|sacch|spugn|ammorbid|candeggin|varechina|deodorant|rasoi|schiuma da barba|assorbent|fazzolett|alluminio|pellicol|lavastovigl|pastiglie|anticalcare|sgrassat|cotton|cerott/i},
+];
+const AISLE_OTHER = {id:"altro",label:"Altro",icon:"📦"};
+const aisleOf = id => AISLES.find(a=>a.id===id) || AISLE_OTHER;
+const guessAisle = name => (AISLES.find(a=>a.re.test(name))||AISLE_OTHER).id;
+const normName = n => n.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^a-z0-9 ]/g,"").replace(/\s+/g," ").trim();
+function parseItem(raw){
+  let s=raw.trim(), qty="";
+  let m=s.match(/^(\d+(?:[.,]\d+)?\s*(?:kg|g|gr|l|lt|ml|pz|x|conf\.?|confezioni|bottiglie|pacchi|vasetti)?)\s+(.+)$/i);
+  if(m){ qty=m[1].replace(/x$/i,"").trim(); s=m[2]; }
+  else { m=s.match(/^(.+?)\s+(?:x\s*)?(\d+(?:[.,]\d+)?\s*(?:kg|g|gr|l|lt|ml|pz|conf\.?)?)$/i); if(m && /\d/.test(m[2])){ s=m[1]; qty=m[2].trim(); } }
+  s=s.charAt(0).toUpperCase()+s.slice(1);
+  return {name:s, qty};
+}
+
+function ShoppingList({fb,user,perDay,onCheckout}){
+  const [items]=useCollection(fb,["users",user.uid,"shopping"],true);
+  const [hist]=useDocument(fb,["users",user.uid,"meta","shoppingHistory"],true);
+  const H=(hist&&hist.items)||{};
+  const [text,setText]=useState("");
+  const [editing,setEditing]=useState(null);
+  const [closing,setClosing]=useState(false);
+  const [copied,setCopied]=useState(false);
+  const col=(...p)=>fb.doc(fb.db,"users",user.uid,...p);
+
+  const sorted=[...items].sort((a,b)=>(a.createdAt||"").localeCompare(b.createdAt||""));
+  const todo=sorted.filter(i=>!i.done), done=sorted.filter(i=>i.done);
+  const groups=[...AISLES,AISLE_OTHER].map(a=>({a,list:todo.filter(i=>(i.aisle||"altro")===a.id)})).filter(g=>g.list.length);
+  const inList=new Set(items.map(i=>normName(i.name)));
+  const suggestions=Object.entries(H).filter(([k])=>!inList.has(k)).sort((a,b)=>(b[1].count||0)-(a[1].count||0)||(b[1].last||"").localeCompare(a[1].last||"")).slice(0,14);
+  const priceOf=i=> i.price!=null ? i.price : (H[normName(i.name)]&&H[normName(i.name)].price);
+  const est=items.reduce((a,i)=>a+(priceOf(i)||0),0);
+  const estCount=items.filter(i=>priceOf(i)).length;
+
+  const addItem=async(raw, fromHist)=>{
+    const lines=raw.split(/[\n,;]+/).map(x=>x.trim()).filter(Boolean);
+    for(const line of lines){
+      const p=fromHist?{name:fromHist.name,qty:""}:parseItem(line);
+      const k=normName(p.name); if(!k) continue;
+      const ex=items.find(i=>normName(i.name)===k&&!i.done);
+      if(ex){ continue; }
+      const h=H[k];
+      const id=uid();
+      await fb.setDoc(col("shopping",id),{id,name:p.name,qty:p.qty,aisle:(h&&h.aisle)||guessAisle(p.name),done:false,createdAt:new Date().toISOString()});
+    }
+    setText("");
+  };
+  const toggle=i=>fb.setDoc(col("shopping",i.id),{...i,done:!i.done,doneAt:!i.done?new Date().toISOString():null});
+  const remove=i=>fb.deleteDoc(col("shopping",i.id));
+  const saveEdit=async e=>{
+    const p={...e, price:e.priceText?parseAmount(e.priceText):null}; delete p.priceText;
+    await fb.setDoc(col("shopping",e.id),p);
+    // ricorda il reparto scelto per la prossima volta
+    const k=normName(e.name); await fb.setDoc(col("meta","shoppingHistory"),{items:{...H,[k]:{...(H[k]||{name:e.name,count:0}),aisle:e.aisle,...(p.price?{price:p.price}:{})}}});
+    setEditing(null);
+  };
+  const clearDone=async()=>{ for(const i of done) await remove(i); };
+  const share=async()=>{
+    const t="🛒 Lista della spesa\n"+groups.map(g=>`\n${g.a.icon} ${g.a.label}\n`+g.list.map(i=>`• ${i.name}${i.qty?` (${i.qty})`:""}`).join("\n")).join("\n");
+    try{ if(navigator.share){ await navigator.share({text:t}); return; } }catch(e){ return; }
+    try{ await navigator.clipboard.writeText(t); setCopied(true); setTimeout(()=>setCopied(false),1600);}catch(e){}
+  };
+  const checkout=async({amount,store,date})=>{
+    const bought=done.length?done:[];
+    // aggiorna lo storico: quante volte compri ogni prodotto
+    const nh={...H}; const now=new Date().toISOString();
+    bought.forEach(i=>{ const k=normName(i.name); nh[k]={...(nh[k]||{}),name:i.name,aisle:i.aisle||guessAisle(i.name),count:((nh[k]&&nh[k].count)||0)+1,last:now,...(i.price?{price:i.price}:{})}; });
+    await fb.setDoc(col("meta","shoppingHistory"),{items:nh});
+    await onCheckout({id:uid(),type:"out",amount,category:"spesa",date:new Date(date+"T12:00:00").toISOString(),note:store||"Spesa",source:"lista",items:bought.map(i=>i.name),createdAt:now});
+    for(const i of bought) await remove(i);
+    setClosing(false);
+  };
+
+  return (
+    <div className="fade" style={{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:12}}>
+      <div style={card}>
+        <div style={{display:"flex",gap:8}}>
+          <input style={{...inputS,flex:1,minWidth:0}} placeholder="Aggiungi… (es. 2 latte, pane, mele)" value={text}
+            onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&text.trim()) addItem(text);}}/>
+          <button disabled={!text.trim()} onClick={()=>addItem(text)} style={{...btnP,padding:"0 18px",fontSize:22}}>+</button>
+        </div>
+        <div style={{fontSize:11,color:"var(--text-faint)",marginTop:6}}>Puoi scriverne più di uno separati da virgola. Il reparto lo indovino io: se sbaglio, tocca ✎ e correggilo, me lo ricordo.</div>
+        {suggestions.length>0 && (
+          <div style={{marginTop:10}}>
+            <div style={{fontSize:11,fontWeight:700,color:"var(--text-dim)",textTransform:"uppercase",marginBottom:6}}>Compri spesso</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+              {suggestions.map(([k,h])=>(
+                <button key={k} onClick={()=>addItem(h.name,h)} style={{...btnG,padding:"6px 10px",fontSize:13}}>{aisleOf(h.aisle).icon} {h.name} <span style={{color:"var(--text-faint)"}}>+</span></button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {items.length>0 && (
+        <div style={{...card,padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          <div>
+            <div style={{fontSize:13,fontWeight:700}}>{todo.length} da prendere · {done.length} nel carrello</div>
+            <div style={{fontSize:11,color:"var(--text-faint)"}}>
+              {estCount?`Stima ~${eur0(est)} (${estCount} prodotti con prezzo)`:"Aggiungi i prezzi con ✎ per avere una stima"}
+              {perDay>0?` · ti restano ${eur(perDay)}/giorno`:""}
+            </div>
+          </div>
+          <button onClick={share} style={{...btnG,padding:"7px 12px",fontSize:13}}>{copied?"Copiata ✓":"📤 Condividi"}</button>
+        </div>
+      )}
+
+      {items.length===0 && (
+        <div style={{...card,textAlign:"center",color:"var(--text-dim)",fontSize:14,padding:"26px 16px"}}>
+          <div style={{fontSize:34}}>🛒</div>La lista è vuota. Scrivi qui sopra cosa ti serve.
+        </div>
+      )}
+
+      {groups.map(g=>(
+        <div key={g.a.id} style={{...card,padding:"10px 14px"}}>
+          <div style={{fontSize:12,fontWeight:700,color:"var(--text-dim)",textTransform:"uppercase",letterSpacing:".4px",margin:"2px 0 4px"}}>{g.a.icon} {g.a.label}</div>
+          {g.list.map(i=><ShopRow key={i.id} i={i} price={priceOf(i)} onToggle={toggle} onEdit={()=>setEditing({...i,priceText:i.price!=null?String(i.price).replace(".",","):""})}/>)}
+        </div>
+      ))}
+
+      {done.length>0 && (
+        <div style={{...card,padding:"10px 14px",opacity:.85}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{fontSize:12,fontWeight:700,color:"var(--text-dim)",textTransform:"uppercase"}}>✅ Nel carrello</div>
+            <button onClick={clearDone} style={{background:"none",border:"none",color:"var(--text-faint)",fontSize:12,textDecoration:"underline"}}>svuota senza registrare</button>
+          </div>
+          {done.map(i=><ShopRow key={i.id} i={i} price={priceOf(i)} onToggle={toggle} onEdit={()=>setEditing({...i,priceText:i.price!=null?String(i.price).replace(".",","):""})}/>)}
+          <button onClick={()=>setClosing(true)} style={{...btnP,width:"100%",marginTop:10}}>🧾 Ho finito la spesa: registra il totale</button>
+        </div>
+      )}
+
+      {editing && (
+        <Sheet onClose={()=>setEditing(null)}>
+          <div style={{fontWeight:800,fontSize:16,marginBottom:10}}>✎ {editing.name}</div>
+          <div style={{display:"grid",gridTemplateColumns:"1.6fr 1fr",gap:8}}>
+            <div><span style={label}>Nome</span><input style={inputS} value={editing.name} onChange={e=>setEditing({...editing,name:e.target.value})}/></div>
+            <div><span style={label}>Quantità</span><input style={inputS} value={editing.qty||""} placeholder="es. 2, 1 kg" onChange={e=>setEditing({...editing,qty:e.target.value})}/></div>
+          </div>
+          <span style={{...label,marginTop:12}}>Reparto</span>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {[...AISLES,AISLE_OTHER].map(a=>(
+              <button key={a.id} onClick={()=>setEditing({...editing,aisle:a.id})} style={{...btnG,padding:"6px 10px",fontSize:13,background:editing.aisle===a.id?"var(--grad)":"var(--surface-2)",borderColor:editing.aisle===a.id?"transparent":"var(--border)"}}>{a.icon} {a.label}</button>
+            ))}
+          </div>
+          <div style={{marginTop:12}}><span style={label}>Prezzo indicativo €</span><input style={inputS} inputMode="decimal" placeholder="facoltativo, serve per la stima" value={editing.priceText} onChange={e=>setEditing({...editing,priceText:e.target.value})}/></div>
+          <div style={{display:"flex",gap:8,marginTop:14}}>
+            <button onClick={async()=>{await remove(editing);setEditing(null);}} style={{...btnG,color:"var(--red)"}}>Elimina</button>
+            <button onClick={()=>saveEdit(editing)} style={{...btnP,flex:1}}>Salva</button>
+          </div>
+        </Sheet>
+      )}
+      {closing && <CheckoutSheet count={done.length} estimate={done.reduce((a,i)=>a+(priceOf(i)||0),0)} onClose={()=>setClosing(false)} onConfirm={checkout}/>}
+    </div>
+  );
+}
+function ShopRow({i,price,onToggle,onEdit}){
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:"1px solid var(--border)"}}>
+      <button aria-label={i.done?"Togli dal carrello":"Metti nel carrello"} onClick={()=>onToggle(i)} style={{width:28,height:28,borderRadius:9,flexShrink:0,border:"2px solid "+(i.done?"var(--green)":"var(--border)"),background:i.done?"var(--green)":"transparent",color:"#0b1120",fontWeight:900,fontSize:15,display:"grid",placeItems:"center",padding:0}}>{i.done?"✓":""}</button>
+      <div onClick={()=>onToggle(i)} style={{flex:1,minWidth:0,cursor:"pointer"}}>
+        <div style={{fontSize:15,fontWeight:600,textDecoration:i.done?"line-through":"none",color:i.done?"var(--text-faint)":"var(--text)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{i.name}{i.qty?<span style={{color:"var(--text-dim)",fontWeight:500}}> · {i.qty}</span>:null}</div>
+        {price ? <div className="num" style={{fontSize:11,color:"var(--text-faint)"}}>~{eur(price)}</div> : null}
+      </div>
+      <button aria-label="Modifica" onClick={onEdit} style={{background:"none",border:"none",color:"var(--text-faint)",fontSize:16,padding:"4px 6px"}}>✎</button>
+    </div>
+  );
+}
+function Sheet({onClose,children}){
+  return (
+    <div onClick={onClose} className="fade" style={{position:"fixed",inset:0,background:"rgba(5,8,18,.6)",backdropFilter:"blur(6px)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:50}}>
+      <div onClick={e=>e.stopPropagation()} className="sheet" style={{background:"var(--surface)",width:"100%",maxWidth:520,borderRadius:"22px 22px 0 0",padding:"18px 16px calc(18px + env(safe-area-inset-bottom))",maxHeight:"92vh",overflowY:"auto",borderTop:"1px solid var(--border)"}}>{children}</div>
+    </div>
+  );
+}
+function CheckoutSheet({count,estimate,onClose,onConfirm}){
+  const [amount,setAmount]=useState("");   // la stima è solo indicativa: il totale lo scrivi tu dallo scontrino
+  const [store,setStore]=useState("");
+  const [date,setDate]=useState(toInputDate(new Date()));
+  const [busy,setBusy]=useState(false);
+  const a=parseAmount(amount);
+  return (
+    <Sheet onClose={onClose}>
+      <div style={{fontWeight:800,fontSize:18}}>🧾 Quanto hai speso?</div>
+      <div style={{fontSize:12,color:"var(--text-dim)",margin:"4px 0 12px"}}>{count} prodotti nel carrello. Il totale va nel bilancio come "Spesa alimentare" e i prodotti spariscono dalla lista (restano nei suggerimenti).</div>
+      <input autoFocus style={{...inputS,fontSize:30,fontWeight:800,textAlign:"center"}} inputMode="decimal" placeholder="Totale dello scontrino €" value={amount} onChange={e=>setAmount(e.target.value)}/>
+      {estimate>0 && <div style={{fontSize:11,color:"var(--text-faint)",marginTop:4,textAlign:"center"}}>stima dai prezzi indicativi: {eur(estimate)}</div>}
+      <div style={{display:"grid",gridTemplateColumns:"1.3fr 1fr",gap:8,marginTop:12}}>
+        <div><span style={label}>Negozio</span><input style={inputS} placeholder="es. Conad, Lidl" value={store} onChange={e=>setStore(e.target.value)}/></div>
+        <div><span style={label}>Data</span><input type="date" style={inputS} value={date} onChange={e=>setDate(e.target.value)}/></div>
+      </div>
+      <button disabled={!a||busy} onClick={async()=>{setBusy(true);await onConfirm({amount:a,store:store.trim(),date});setBusy(false);}} style={{...btnP,width:"100%",marginTop:14}}>{busy?"Registro…":`Registra ${a?eur(a):""}`}</button>
+    </Sheet>
+  );
+}
+
 // ─── Schermata: Statistiche ────────────────────────────────────────────────
 function Stats({txs,budget,now}){
   const cur=cycleOf(now,budget.payday);
   const cycles=[]; for(let i=5;i>=0;i--) cycles.push(shiftCycle(cur,-i,budget.payday));
-  const rows=cycles.map(c=>{
+  const rows=cycles.filter(c=>c.end>budget.start).map(c=>{
     const s=computeCycle({cycle:c,now,txs,budget});
-    return {c, inc:s.income, out:s.spent, bal:s.income-s.spent, cats:s.cats, cur:s.isCurrent};
+    return {c, inc:s.income, out:s.spent, bal:s.income-s.spent, cats:s.cats, cur:s.isCurrent, partial:s.partial, effStart:s.effStart};
   }).filter(r=>r.inc>0||r.out>0||r.cur);
   const max=Math.max(1,...rows.map(r=>Math.max(r.inc,r.out)));
-  const past=rows.filter(r=>!r.cur);
+  const past=rows.filter(r=>!r.cur&&!r.partial);   // medie solo su mesi chiusi e tracciati per intero
   const avgOut = past.length? past.reduce((a,r)=>a+r.out,0)/past.length : 0;
 
   // media per categoria nei mesi chiusi vs mese in corso
@@ -489,7 +702,7 @@ function Stats({txs,budget,now}){
         {rows.map(r=>(
           <div key={r.c.key} style={{marginBottom:12}}>
             <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-              <span style={{fontWeight:600}}>{cycleLabel(r.c)}{r.cur?" (in corso)":""}</span>
+              <span style={{fontWeight:600}}>{cycleLabel(r.c)}{r.cur?" (in corso)":""}{r.partial&&!r.cur?` (dal ${fmtDate(r.effStart)})`:""}</span>
               <span className="num" style={{fontWeight:700,color:r.bal>=0?"var(--green)":"var(--red)"}}>{r.bal>=0?"+":""}{eur0(r.bal)}{r.cur?" finora":""}</span>
             </div>
             <div style={{height:7,background:"var(--surface-2)",borderRadius:4,marginTop:4}}><div style={{height:"100%",width:`${r.inc/max*100}%`,background:"var(--green)",borderRadius:4}}/></div>
@@ -497,7 +710,11 @@ function Stats({txs,budget,now}){
           </div>
         ))}
         <div style={{fontSize:11,color:"var(--text-faint)"}}>🟩 entrate · 🟥 uscite · numero a destra: risparmio del mese</div>
+        <div style={{fontSize:11,color:"var(--text-faint)",marginTop:4}}>Bilancio tracciato dal {fmtLong(budget.start)}: i mesi prima non sono contati (si cambia in Opzioni).</div>
       </div>
+      {past.length===0 && (
+        <div style={{...card,fontSize:13,color:"var(--text-dim)",lineHeight:1.45}}>📊 Il confronto con la tua media comparirà quando avrai almeno un mese completo tracciato, da stipendio a stipendio.</div>
+      )}
       {past.length>0 && (
         <div style={card}>
           <div style={{fontWeight:700,marginBottom:4}}>Questo mese (finora) vs la tua media</div>
@@ -519,16 +736,17 @@ function Stats({txs,budget,now}){
 }
 
 // ─── Schermata: Impostazioni ───────────────────────────────────────────────
-function Settings({budget,saveBudget,txs,user,onLogout}){
+function Settings({budget,saveBudget,txs,user,onLogout,autoStart}){
   const [payday,setPayday]=useState(String(budget.payday||27));
   const [salary,setSalary]=useState(budget.expectedSalary?String(budget.expectedSalary).replace(".",","):"");
   const [fixed,setFixed]=useState(budget.fixed||[]);
+  const [startDate,setStartDate]=useState(budget.startDate||"");
   const [nf,setNf]=useState({name:"",amount:"",day:"1",category:"casa"});
   const [saved,setSaved]=useState(false);
 
   const save=async(fx=fixed)=>{
     const p=Math.min(31,Math.max(1,parseInt(payday)||27));
-    await saveBudget({payday:p, expectedSalary:parseAmount(salary)||0, fixed:fx});
+    await saveBudget({payday:p, expectedSalary:parseAmount(salary)||0, fixed:fx, startDate:startDate||""});
     setSaved(true); setTimeout(()=>setSaved(false),1800);
   };
   const addFixed=async()=>{
@@ -555,6 +773,16 @@ function Settings({budget,saveBudget,txs,user,onLogout}){
         </div>
         <div style={{fontSize:12,color:"var(--text-faint)",marginTop:8,lineHeight:1.4}}>Il "mese" va da un giorno di paga al successivo. Se lo stipendio arriva fino a {SALARY_TOLERANCE_DAYS} giorni prima, conta comunque nel mese nuovo. Lo stipendio previsto serve solo finché non registri quello vero; se lo lasci vuoto uso la media degli ultimi 3.</div>
         <button onClick={()=>save()} style={{...btnP,marginTop:12,width:"100%"}}>{saved?"Salvato ✓":"Salva"}</button>
+      </div>
+
+      <div style={card}>
+        <div style={{fontWeight:700}}>📅 Inizio del bilancio</div>
+        <div style={{fontSize:12,color:"var(--text-faint)",margin:"4px 0 10px",lineHeight:1.45}}>Quello che c'è prima di questa data (per esempio gli anni di benzina di BenzinApp) non entra nei conti, così i mesi senza entrate registrate non risultano in rosso. {startDate?"":`Ora è automatico: dal primo movimento che hai inserito o importato (${fmtLong(autoStart)}).`}</div>
+        <div style={{display:"flex",gap:8}}>
+          <input type="date" style={{...inputS,flex:1}} value={startDate||toInputDate(autoStart)} onChange={e=>setStartDate(e.target.value)}/>
+          {startDate && <button onClick={()=>setStartDate("")} style={btnG}>Automatico</button>}
+        </div>
+        <button onClick={()=>save()} style={{...btnP,marginTop:10,width:"100%"}}>{saved?"Salvato ✓":"Salva"}</button>
       </div>
 
       <div style={card}>
@@ -839,13 +1067,64 @@ function ImportModal({onClose,onSaveMany,txs,payday}){
   );
 }
 
+
+// ─── Spesa da notifica (MacroDroid / Tasker) ───────────────────────────────
+// L'automazione sul telefono apre  .../GalleggiApp/#n=<titolo e testo della notifica>
+// Qui si estrae importo, esercente e tipo, e si apre il modulo già compilato.
+const MERCHANT_CATS = [
+  [/conad|coop|esselunga|lidl|eurospin|carrefour|pam\b|despar|famila|aldi|md\s|penny|iper|tigros|bennet|naturasi|crai|sigma|supermerc|alimentari|macelleria|panificio|forno/i,"spesa"],
+  [/bar\b|caff|cafe|pasticc|ristor|pizz|trattoria|osteria|sushi|burger|mcdonald|kebab|piadin|gelat|pub\b|deliveroo|glovo|just\s*eat/i,"bar"],
+  [/autostrad|telepass|pedagg|casello|unipolmove/i,"pedaggi"],
+  [/trenitalia|italo|atm\b|tper|taxi|uber|parchegg|easypark|mycicero|sosta|car\s*sharing|enjoy|share\s*now|freenow/i,"trasporti"],
+  [/farmac|parafarm|ospedal|medic|dentist|ottic/i,"salute"],
+  [/tim\b|vodafone|windtre|wind\s*tre|iliad|fastweb|ho\.?\s*mobile|kena|very\s*mobile/i,"telefono"],
+  [/netflix|spotify|disney|prime\s*video|dazn|now\s*tv|apple\.com|google\s*play|youtube/i,"abbonamenti"],
+  [/enel|hera|iren|a2a|eni\s*plenitude|edison|sorgenia|acea|bollett/i,"bollette"],
+  [/zara|h&m|decathlon|ovs|primark|uniqlo|calzedonia|intimissimi|scarpe|foot\s*locker/i,"vestiti"],
+  [/cinema|teatro|museo|steam|playstation|xbox|ticketone|concert/i,"svago"],
+];
+const FUEL_RE=/\b(eni|q8|ip\b|tamoil|esso|shell|api\b|totalerg|erg\b|agip|repsol|kerotris|beyfin|carburant|benzin|distribut)/i;
+function parseNotification(raw){
+  const text=raw.replace(/\s+/g," ").trim();
+  const m=text.match(/(?:€|eur)\s*(\d{1,3}(?:\.\d{3})*,\d{1,2}|\d+(?:[.,]\d{1,2})?)|(\d{1,3}(?:\.\d{3})*,\d{1,2}|\d+[.,]\d{2})\s*(?:€|eur)/i);
+  let amount=null;
+  if(m){ let v=(m[1]||m[2]); v=/,\d{1,2}$/.test(v)?v.replace(/\./g,"").replace(",","."):v.replace(",","."); amount=Math.round(parseFloat(v)*100)/100; }
+  const income=/accredit|ricevut[oi]|bonifico in entrata|hai ricevuto|rimbors|stipend/i.test(text);
+  let merchant="";
+  const mm=text.match(/(?:\bpresso|\bda|\ba|\bat|\bto|\bsu)\s+([A-Z0-9][^€\d,.;:!]{1,40}?)(?=\s*(?:€|eur\b|con\b|il\b|alle\b|in data|del\b|tramite|\bper\b|[,.;:!]|$))/);
+  if(mm) merchant=mm[1].trim();
+  if(!merchant && m){   // es. "EUR 58,00 ENI STATION BOLOGNA il 02/11": esercente subito dopo l'importo
+    const after=text.slice(m.index+m[0].length).match(/^\s*(?:€|eur)?\s*([A-Za-z][^€\d,.;:!]{1,40}?)(?=\s*(?:\bil\b|\bdel\b|\bcon\b|\balle\b|\bin data\b|[,.;:!]|\d|$))/i);
+    if(after) merchant=after[1].trim();
+  }
+  merchant=merchant.replace(/\b(google\s*pay|google\s*wallet|carta|card)\b/ig,"").trim();
+  let category=income?"altro_in":"altro";
+  if(!income) for(const [re,c] of MERCHANT_CATS) if(re.test(merchant||text)){ category=c; break; }
+  if(income && /stipend/i.test(text)) category="stipendio";
+  const fuel=!income && FUEL_RE.test(merchant||text);
+  return {type:income?"in":"out", amount, note:merchant, category, fuel, raw:text};
+}
+function readIncoming(){
+  try{
+    const h=location.hash||""; let raw=null;
+    if(h.startsWith("#n=")){ const r=h.slice(3).replace(/\+/g," "); try{ raw=decodeURIComponent(r); }catch(e){ raw=r.replace(/%20/g," "); } }
+    const q=new URLSearchParams(location.search);
+    if(!raw && q.get("n")) raw=q.get("n");
+    if(!raw) return null;
+    history.replaceState(null,"",location.pathname);   // evita di riaprirlo ricaricando la pagina
+    return parseNotification(raw);
+  }catch(e){ return null; }
+}
+const INCOMING = readIncoming();
+
 // ─── Modale: nuovo movimento ───────────────────────────────────────────────
-function AddModal({onClose,onSave,onDelete,initialType="out",edit=null}){
-  const [type,setTypeRaw]=useState(edit?edit.type:initialType);
-  const [amount,setAmount]=useState(edit?String(edit.amount).replace(".",","):"");
-  const [category,setCategory]=useState(edit?edit.category:(initialType==="out"?"spesa":"stipendio"));
+function AddModal({onClose,onSave,onDelete,initialType="out",edit=null,prefill=null}){
+  const P=prefill||{};
+  const [type,setTypeRaw]=useState(edit?edit.type:(P.type||initialType));
+  const [amount,setAmount]=useState(edit?String(edit.amount).replace(".",","):(P.amount?P.amount.toFixed(2).replace(".",","):""));
+  const [category,setCategory]=useState(edit?edit.category:(P.category||(initialType==="out"?"spesa":"stipendio")));
   const [date,setDate]=useState(toInputDate(edit?edit.date:new Date()));
-  const [note,setNote]=useState(edit?edit.note||"":"");
+  const [note,setNote]=useState(edit?edit.note||"":(P.note||""));
   const [busy,setBusy]=useState(false);
   const cats = type==="out"?OUT_CATS:IN_CATS;
   const setType=k=>{ if(k===type) return; setTypeRaw(k); setCategory(k==="out"?"spesa":"stipendio"); };
@@ -868,7 +1147,15 @@ function AddModal({onClose,onSave,onDelete,initialType="out",edit=null}){
           ))}
         </div>
         {edit && <div style={{fontWeight:800,fontSize:16,marginBottom:10}}>✏️ Modifica movimento</div>}
-        <input autoFocus={!edit} style={{...inputS,fontSize:32,fontWeight:800,textAlign:"center",padding:"14px"}} inputMode="decimal" placeholder="0,00 €" value={amount} onChange={e=>setAmount(e.target.value)}/>
+        {prefill && (
+          <div style={{background:"var(--surface-2)",border:"1px solid var(--border)",borderRadius:12,padding:"9px 12px",marginBottom:12}}>
+            <div style={{fontWeight:700,fontSize:14}}>🔔 Hai fatto un pagamento: lo registro?</div>
+            <div style={{fontSize:11,color:"var(--text-faint)",marginTop:3,wordBreak:"break-word"}}>{P.raw}</div>
+            {P.fuel && <div style={{fontSize:12,color:"var(--yellow)",marginTop:6}}>⛽ Sembra un rifornimento: registralo in BenzinApp, qui arriva da solo. Se non è benzina, salvalo pure.</div>}
+            {!P.amount && <div style={{fontSize:12,color:"var(--yellow)",marginTop:6}}>Non ho trovato l'importo nella notifica: scrivilo tu.</div>}
+          </div>
+        )}
+        <input autoFocus={!edit&&!(prefill&&prefill.amount)} style={{...inputS,fontSize:32,fontWeight:800,textAlign:"center",padding:"14px"}} inputMode="decimal" placeholder="0,00 €" value={amount} onChange={e=>setAmount(e.target.value)}/>
         <span style={{...label,marginTop:14}}>Categoria</span>
         <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
           {cats.map(c=>(
@@ -933,6 +1220,9 @@ function App(){
   const [adding,setAdding]=useState(null); // {type} o {edit}
   const [importing,setImporting]=useState(false);
   const [toast,setToast]=useState(null);
+  const [incoming,setIncoming]=useState(INCOMING);
+  // nuova notifica mentre l'app è già aperta (l'automazione cambia solo l'hash)
+  useEffect(()=>{ const on=()=>{ const n=readIncoming(); if(n) setIncoming(n); }; window.addEventListener("hashchange",on); return ()=>window.removeEventListener("hashchange",on); },[]);
   const now=useMemo(()=>new Date(),[tab]);
 
   const [txRows,txLoading,txErr]=useCollection(fb, signedIn?["users",user.uid,"transactions"]:null, signedIn);
@@ -947,7 +1237,16 @@ function App(){
     id:"fuel-"+r.id, type:"out", amount:Number(r.amount), category:"carburante", date:r.datetime,
     note:`⛽ ${r.vehicle||"Rifornimento"}${r.pricePerLiter?` · ${Number(r.pricePerLiter).toFixed(3).replace(".",",")} €/L`:""}`, source:"benzinapp"
   })),[refuels]);
-  const txs = useMemo(()=>[...txRows,...fuelTxs],[txRows,fuelTxs]);
+  const allTxs = useMemo(()=>[...txRows,...fuelTxs],[txRows,fuelTxs]);
+  // Inizio del bilancio: scelto in Opzioni, altrimenti il primo movimento inserito/importato (non la benzina)
+  const autoStart = useMemo(()=>{
+    const ds=txRows.map(t=>effectiveDate(t,budget.payday)).filter(d=>!isNaN(d));
+    const d = ds.length ? new Date(Math.min(...ds)) : cycleOf(new Date(),budget.payday).start;
+    d.setHours(0,0,0,0); return d;
+  },[txRows,budget.payday]);
+  const start = budget.startDate ? new Date(budget.startDate+"T00:00:00") : autoStart;
+  budget.start = start;
+  const txs = useMemo(()=>allTxs.filter(t=>effectiveDate(t,budget.payday)>=start),[allTxs,start.getTime(),budget.payday]);
 
   const flash=m=>{setToast(m);setTimeout(()=>setToast(null),1800);};
   const saveTx=async t=>{ const {db,doc,setDoc}=fb; await setDoc(doc(db,"users",user.uid,"transactions",t.id),t); flash(t.updatedAt?"Modifica salvata":t.type==="in"?"Entrata salvata":"Spesa salvata"); };
@@ -966,7 +1265,7 @@ function App(){
   const curCycle=cycleOf(now,budget.payday);
   const stats=computeCycle({cycle:curCycle,now,txs,budget});
   const recent=txs.filter(t=>inCycle(t,curCycle,budget.payday)).sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,6);
-  const TABS=[["home","Bilancio"],["mov","Movimenti"],["stats","Statistiche"],["set","⚙️ Opzioni"]];
+  const TABS=[["home","Bilancio"],["mov","Movimenti"],["lista","🛒 Lista"],["stats","Grafici"],["set","⚙️"]];
 
   return (
     <div style={{maxWidth:560,margin:"0 auto",padding:"calc(14px + env(safe-area-inset-top)) 14px 110px"}}>
@@ -977,7 +1276,7 @@ function App(){
           <div style={{fontSize:11,color:"var(--text-faint)"}}>{fuelTxs.length?`⛽ collegata a BenzinApp · ${fuelTxs.length} rifornimenti`:"⛽ BenzinApp: nessun rifornimento letto"}</div>
         </div>
       </header>
-      <nav style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:5,marginBottom:14}}>
+      <nav style={{display:"grid",gridTemplateColumns:"1fr 1.15fr 1fr 0.95fr 0.55fr",gap:5,marginBottom:14}}>
         {TABS.map(([k,l])=>(
           <button key={k} onClick={()=>setTab(k)} style={{...btnG,padding:"8px 2px",fontSize:12.5,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",borderRadius:999,background:tab===k?"var(--grad)":"var(--surface-2)",borderColor:tab===k?"transparent":"var(--border)"}}>{l}</button>
         ))}
@@ -985,16 +1284,18 @@ function App(){
       {txErr && <div style={{...card,borderColor:"var(--red)",marginBottom:12,fontSize:13}}>⚠️ Non riesco a leggere i dati: {txErr}. Controlla le regole di sicurezza di Firestore.</div>}
 
       {tab==="home"  && <Home stats={stats} cycle={curCycle} onPayFixed={payFixed} recent={recent} onAdd={openAdd} onImport={()=>setImporting(true)} onEdit={openEdit} onOpenSettings={()=>setTab("set")} hasBudget={!!budgetDoc}/>}
-      {tab==="mov"   && <Movements txs={txs} budget={budget} cycle={cycle} setCycle={setCycle} onDelete={delTx} onEdit={openEdit} onAdd={openAdd} onImport={()=>setImporting(true)}/>}
+      {tab==="mov"   && <Movements txs={allTxs} budget={budget} cycle={cycle} setCycle={setCycle} onDelete={delTx} onEdit={openEdit} onAdd={openAdd} onImport={()=>setImporting(true)}/>}
+      {tab==="lista" && <ShoppingList fb={fb} user={user} perDay={stats.perDay} onCheckout={saveTx}/>}
       {tab==="stats" && <Stats txs={txs} budget={budget} now={now}/>}
-      {tab==="set"   && <Settings budget={budget} saveBudget={saveBudget} txs={txs} user={user} onLogout={()=>fb.signOut(fb.auth)}/>}
+      {tab==="set"   && <Settings budget={budget} saveBudget={saveBudget} txs={allTxs} autoStart={autoStart} user={user} onLogout={()=>fb.signOut(fb.auth)}/>}
       {tab!=="set" && <GPverseFooter/>}
 
-      {tab!=="set" && (
+      {tab!=="set" && tab!=="lista" && (
         <button aria-label="Aggiungi movimento" onClick={()=>openAdd("out")} style={{position:"fixed",right:20,bottom:"calc(22px + env(safe-area-inset-bottom))",width:62,height:62,borderRadius:20,border:"none",background:"var(--grad)",color:"#fff",fontSize:32,fontWeight:300,boxShadow:"0 12px 28px -8px rgba(139,62,240,.7)"}}>+</button>
       )}
       {adding && <AddModal key={adding.edit?adding.edit.id:adding.type} initialType={adding.type} edit={adding.edit} onClose={()=>setAdding(null)} onSave={saveTx}/>}
-      {importing && <ImportModal onClose={()=>setImporting(false)} onSaveMany={saveMany} txs={txs} payday={budget.payday}/>}
+      {!adding && incoming && <AddModal key="notif" prefill={incoming} onClose={()=>setIncoming(null)} onSave={async t=>{await saveTx({...t,source:"notifica"});}}/>}
+      {importing && <ImportModal onClose={()=>setImporting(false)} onSaveMany={saveMany} txs={allTxs} payday={budget.payday}/>}
       {toast && <div className="fade" style={{position:"fixed",top:"calc(16px + env(safe-area-inset-top))",left:"50%",transform:"translateX(-50%)",background:"var(--green)",color:"#0b1120",fontWeight:700,padding:"9px 16px",borderRadius:999,zIndex:60}}>{toast}</div>}
     </div>
   );

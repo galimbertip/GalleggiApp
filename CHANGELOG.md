@@ -2,6 +2,13 @@
 
 Schema **V.maggiore.minore.patch**: *maggiore* = cambi di struttura, *minore* = nuove funzioni, *patch* = correzioni.
 
+## v2.3.0 — Scadenze, ricerca e backup (2026-11-14)
+- 🔎 Ricerca nei movimenti su tutti i mesi: descrizione, categoria, trasferta o importo, con totale dei risultati
+- 📅 Scadenze in arrivo: le spese fisse dei prossimi 5 giorni in evidenza nel Bilancio (anche quelle scadute)
+- 🔁 Riconosce le spese che si ripetono ogni mese (abbonamenti, bollette) e propone di aggiungerle alle fisse
+- Corretto: una spesa fissa inserita come spesa normale (a mano, da notifica o PDF) non viene più contata due volte
+- 💾 Backup completo in un file (movimenti, bilancio, categorie, lista, Salvadanaio, Benzina) e ripristino senza cancellare niente
+
 ## v2.2.1 — Salvadanaio solo per i progetti (2026-11-13)
 - Il Salvadanaio resta separato dal risparmio mensile: è per collette e progetti particolari (Quaresima, Avvento, fioretti)
 - Tolta l'idea pronta "Fondo emergenze", aggiunta "Raccolta per una causa"

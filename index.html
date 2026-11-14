@@ -1,12 +1,12 @@
 <!DOCTYPE html>
-<!-- GalleggiApp v2.2.1 · un progetto GPverse · cronologia completa in CHANGELOG (in fondo al codice e nella schermata Novità) -->
+<!-- GalleggiApp v2.3.0 · un progetto GPverse · cronologia completa in CHANGELOG (in fondo al codice e nella schermata Novità) -->
 <html lang="it">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>GalleggiApp</title>
   <meta name="theme-color" content="#0b1120">
-  <meta name="version" content="2.2.1">
+  <meta name="version" content="2.3.0">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="GalleggiApp">
@@ -85,8 +85,9 @@ const { useState, useEffect, useMemo } = React;
 
 // ─── Versione ─────────────────────────────────────────────────────────────
 // Schema V.maggiore.minore.patch — maggiore: cambi di struttura · minore: nuove funzioni · patch: correzioni
-const APP_VERSION = "2.2.1";
+const APP_VERSION = "2.3.0";
 const CHANGELOG = [
+ {"v": "2.3.0", "date": "2026-11-14", "title": "Scadenze, ricerca e backup", "items": ["🔎 Ricerca nei movimenti su tutti i mesi: descrizione, categoria, trasferta o importo, con totale dei risultati", "📅 Scadenze in arrivo: le spese fisse dei prossimi 5 giorni in evidenza nel Bilancio (anche quelle scadute)", "🔁 Riconosce le spese che si ripetono ogni mese (abbonamenti, bollette) e propone di aggiungerle alle fisse", "Corretto: una spesa fissa inserita come spesa normale (a mano, da notifica o PDF) non viene più contata due volte", "💾 Backup completo in un file (movimenti, bilancio, categorie, lista, Salvadanaio, Benzina) e ripristino senza cancellare niente"]},
  {"v": "2.2.1", "date": "2026-11-13", "title": "Salvadanaio solo per i progetti", "items": ["Il Salvadanaio resta separato dal risparmio mensile: è per collette e progetti particolari (Quaresima, Avvento, fioretti)", "Tolta l'idea pronta \"Fondo emergenze\", aggiunta \"Raccolta per una causa\""]},
  {"v": "2.2.0", "date": "2026-11-13", "title": "Trasferte e limiti", "items": ["🧾 Spese di trasferta da rimborsare: le segni con il nome della trasferta, non contano nel ritmo di spesa", "Filtro \"🧾 Rimborsi\" in Movimenti: totale in attesa diviso per trasferta e nota spese da condividere o copiare", "\"Rimborso arrivato\": registra l'entrata e chiude le spese coperte; se elimini il rimborso tornano in attesa", "In Bilancio: quanto aspetti di rimborso e dove arriveresti a fine mese quando arriva", "🎯 Limiti mensili per categoria in ⚙️, con barre e tacca del punto del mese in Bilancio", "Avviso quando una spesa ti porta all'80% o oltre il limite della categoria"]},
  {
@@ -397,6 +398,18 @@ function computeCycle({cycle, now, txs, budget}){
   // Spese fisse non ancora pagate in questo mese
   const fixed = budget.fixed||[];
   const paidFixedIds = new Set(outs.filter(t=>t.fixedId).map(t=>t.fixedId));
+  // Una fissa conta come pagata anche se l'hai inserita come spesa normale (a mano, da notifica o PDF):
+  // stessa categoria e importo simile (±5%), oppure il nome della fissa nella descrizione.
+  const fixedMatch = new Map();   // id movimento -> id fissa
+  (budget.fixed||[]).forEach(f=>{
+    if(paidFixedIds.has(f.id)) return;
+    const fn=normName(f.name||""); const fw=fn.split(" ").filter(w=>w.length>=4);
+    const hit=outs.find(t=>!t.fixedId && !fixedMatch.has(t.id) && !isReimb(t) && t.source!=="benzinapp" &&
+      ((t.category===f.category && Math.abs(t.amount-f.amount)<=Math.max(1,f.amount*0.05)) ||
+       (fw.length && fw.some(w=>normName(t.note||"").includes(w)) && Math.abs(t.amount-f.amount)<=Math.max(2,f.amount*0.25))));
+    if(hit){ fixedMatch.set(hit.id,f.id); paidFixedIds.add(f.id); }
+  });
+  const isFixedLike = t => !!t.fixedId || fixedMatch.has(t.id);
   // in un mese iniziato a metà, le fisse con scadenza prima dell'inizio le considero già pagate
   const fixedDate = f => { const d=new Date(cycle.start); const sd=cycle.start.getDate();
     if(f.day>=sd) d.setDate(Math.min(f.day,new Date(d.getFullYear(),d.getMonth()+1,0).getDate()));
@@ -404,13 +417,16 @@ function computeCycle({cycle, now, txs, budget}){
     return d; };
   const pendingFixed = isCurrent ? fixed.filter(f=>!paidFixedIds.has(f.id) && !(partial && fixedDate(f)<effStart)) : [];
   const pendingFixedTotal = pendingFixed.reduce((a,f)=>a+f.amount,0);
+  // scadenze: quando tocca a ogni fissa ancora da pagare
+  const today0 = new Date(now); today0.setHours(0,0,0,0);
+  const fixedDue = pendingFixed.map(f=>{ const d=fixedDate(f); d.setHours(0,0,0,0); return {...f,due:d,inDays:Math.round((d-today0)/DAY)}; }).sort((a,b)=>a.due-b.due);
 
   // Spese "di tutti i giorni" = tutto tranne fisse e straordinarie: SOLO queste stimano il ritmo.
   // Una riparazione da 400 € non si ripete ogni giorno: toglie soldi oggi, ma non va proiettata sul resto del mese.
-  const oneOffList   = outs.filter(t=>!t.fixedId && isOneOff(t));
+  const oneOffList   = outs.filter(t=>!isFixedLike(t) && isOneOff(t));
   const oneOffSpent  = oneOffList.reduce((a,t)=>a+t.amount,0);
-  const fixedSpent   = outs.filter(t=>t.fixedId).reduce((a,t)=>a+t.amount,0);
-  const variableSpent = outs.filter(t=>!t.fixedId && !isOneOff(t) && !isReimb(t)).reduce((a,t)=>a+t.amount,0);
+  const fixedSpent   = outs.filter(isFixedLike).reduce((a,t)=>a+t.amount,0);
+  const variableSpent = outs.filter(t=>!isFixedLike(t) && !isOneOff(t) && !isReimb(t)).reduce((a,t)=>a+t.amount,0);
   const reimbSpent    = outs.filter(isReimb).reduce((a,t)=>a+t.amount,0);
   const totalDays  = Math.round((cycle.end-cycle.start)/DAY);
   const daysElapsed= isCurrent ? Math.max(1, Math.floor((now-cycle.start)/DAY)+1) : totalDays;
@@ -453,7 +469,7 @@ function computeCycle({cycle, now, txs, budget}){
   const byCatOwn = {}; outs.filter(t=>!isReimb(t)).forEach(t=>{byCatOwn[t.category]=(byCatOwn[t.category]||0)+t.amount;});
   const cats = Object.entries(byCat).map(([id,v])=>({...catOf(id),value:v})).sort((a,b)=>b.value-a.value);
 
-  return {list, byCatOwn, reimbSpent, income, spent, salaryPending, expectedSalary, pendingFixed, pendingFixedTotal, variableSpent, oneOffSpent, oneOffList, fixedSpent, startBalance, hasStartBal, salaryLogged,
+  return {list, byCatOwn, reimbSpent, fixedDue, fixedMatch, income, spent, salaryPending, expectedSalary, pendingFixed, pendingFixedTotal, variableSpent, oneOffSpent, oneOffList, fixedSpent, startBalance, hasStartBal, salaryLogged,
           totalDays, daysElapsed, daysLeft, trackedDays, partial, effStart, dailyRate, curRate, histRate, totalIncome, available, projected, perDay, verdict, cats, isCurrent};
 }
 
@@ -572,7 +588,7 @@ function LimitsCard({limits,stats,onOpenSettings}){
     </div>
   );
 }
-function Home({stats,cycle,onPayFixed,recent,onAdd,onImport,onEdit,onOpenSettings,hasBudget,paydayHint,pendingReimb,onOpenReimb,limits}){
+function Home({stats,cycle,onPayFixed,recent,onAdd,onImport,onEdit,onOpenSettings,hasBudget,paydayHint,pendingReimb,onOpenReimb,limits,recurring,onAcceptRecurring,onDismissRecurring}){
   const [explain,setExplain]=useState(false);
   const v=stats.verdict.level;
   const rate=eur(stats.dailyRate);
@@ -665,7 +681,7 @@ function Home({stats,cycle,onPayFixed,recent,onAdd,onImport,onEdit,onOpenSetting
 
       <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:10}}>
         <Tile title="Entrate" value={eur0(stats.totalIncome)} color="var(--green)" sub={stats.salaryPending?`incl. ${eur0(stats.salaryPending)} stipendio previsto`:"registrate"}/>
-        <Tile title="Già speso" value={eur0(stats.spent)} sub={[stats.oneOffSpent>0&&`straordinarie ${eur0(stats.oneOffSpent)}`,stats.reimbSpent>0&&`trasferte ${eur0(stats.reimbSpent)}`].filter(Boolean).join(" · ")||"tutte spese di tutti i giorni"}/>
+        <Tile title="Già speso" value={eur0(stats.spent)} sub={[stats.fixedSpent>0&&`fisse ${eur0(stats.fixedSpent)}`,stats.oneOffSpent>0&&`straordinarie ${eur0(stats.oneOffSpent)}`,stats.reimbSpent>0&&`trasferte ${eur0(stats.reimbSpent)}`].filter(Boolean).join(" · ")||"tutte spese di tutti i giorni"}/>
         <Tile title="Fisse da pagare" value={eur0(stats.pendingFixedTotal)} color="var(--amber)" sub={`${stats.pendingFixed.length} voci`}/>
         <Tile title="Disponibile" value={eur0(stats.available)} color={stats.available>=0?"var(--text)":"var(--red)"} sub="tolte le fisse"/>
       </div>
@@ -675,22 +691,50 @@ function Home({stats,cycle,onPayFixed,recent,onAdd,onImport,onEdit,onOpenSetting
           <span style={{fontSize:26}}>🧾</span>
           <div style={{flex:1}}>
             <div style={{fontWeight:700}}>Da rimborsare: <span className="num">{eur(pendingReimb.total)}</span></div>
-            <div style={{fontSize:12,color:"var(--text-dim)",lineHeight:1.4}}>{pendingReimb.count} spese di trasferta{pendingReimb.trips>1?` in ${pendingReimb.trips} trasferte`:""}. {stats.verdict.level!=="none"&&stats.verdict.level!=="needStart"?`Quando arriva il rimborso, a fine mese saresti a circa ${eur0(stats.projected+pendingReimb.total)}.`:""}</div>
+            <div style={{fontSize:12,color:"var(--text-dim)",lineHeight:1.4}}>{pendingReimb.count} {pendingReimb.count===1?"spesa":"spese"} di trasferta{pendingReimb.trips>1?` in ${pendingReimb.trips} trasferte`:""}. {stats.verdict.level!=="none"&&stats.verdict.level!=="needStart"?`Quando arriva il rimborso, a fine mese saresti a circa ${eur0(stats.projected+pendingReimb.total)}.`:""}</div>
           </div>
           <span style={{color:"var(--text-faint)"}}>›</span>
         </button>
       )}
+      {(()=>{ const soon=stats.fixedDue.filter(f=>f.inDays<=5); if(!soon.length) return null; return (
+        <div style={{...card,borderColor:soon.some(f=>f.inDays<0)?"rgba(240,89,110,.55)":"rgba(245,166,35,.5)"}}>
+          <div style={{fontWeight:700,marginBottom:6}}>📅 Scadenze in arrivo</div>
+          {soon.map(f=>(
+            <div key={f.id} style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",borderBottom:"1px solid var(--border)"}}>
+              <span style={{fontSize:18}}>{catOf(f.category).icon}</span>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:14,fontWeight:600}}>{f.name}</div>
+                <div style={{fontSize:11,color:f.inDays<0?"var(--red)":f.inDays<=1?"var(--amber)":"var(--text-faint)"}}>{f.inDays<0?`scaduta da ${-f.inDays} ${f.inDays===-1?"giorno":"giorni"}`:f.inDays===0?"scade oggi":f.inDays===1?"scade domani":`tra ${f.inDays} giorni · ${fmtDate(f.due)}`}</div></div>
+              <b className="num">{eur(f.amount)}</b>
+              <button onClick={()=>onPayFixed(f)} style={{...btnG,padding:"6px 10px",fontSize:12}}>Pagata ✓</button>
+            </div>
+          ))}
+        </div>); })()}
+      {recurring && recurring.length>0 && (
+        <div style={{...card,borderColor:"rgba(139,92,246,.55)"}}>
+          <div style={{fontWeight:700}}>🔁 Sembra una spesa che si ripete</div>
+          {recurring.slice(0,2).map(r=>(
+            <div key={r.key} style={{marginTop:8,padding:"10px 12px",background:"var(--surface-2)",borderRadius:12}}>
+              <div style={{fontSize:14}}><b>{catOf(r.category).icon} {r.name}</b> · circa <b className="num">{eur(r.amount)}</b> verso il giorno {r.day}</div>
+              <div style={{fontSize:11,color:"var(--text-faint)",marginTop:2}}>Trovata in {r.cycles} mesi diversi. Se la metti tra le fisse, il bilancio la toglie subito dal disponibile e ti avvisa prima della scadenza.</div>
+              <div style={{display:"flex",gap:8,marginTop:8}}>
+                <button onClick={()=>onDismissRecurring(r)} style={{...btnG,padding:"7px 12px",fontSize:13}}>No, grazie</button>
+                <button onClick={()=>onAcceptRecurring(r)} style={{...btnP,flex:1,padding:"7px 12px",fontSize:13}}>＋ Aggiungi alle fisse</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       <LimitsCard limits={limits} stats={stats} onOpenSettings={onOpenSettings}/>
 
-      {stats.pendingFixed.length>0 && (
+      {stats.fixedDue.filter(f=>f.inDays>5).length>0 && (
         <div style={card}>
-          <div style={{fontWeight:700,marginBottom:6}}>📌 Spese fisse ancora da pagare</div>
-          {stats.pendingFixed.sort((a,b)=>a.day-b.day).map(f=>(
+          <div style={{fontWeight:700,marginBottom:6}}>📌 Altre spese fisse da pagare</div>
+          {stats.fixedDue.filter(f=>f.inDays>5).map(f=>(
             <div key={f.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",borderBottom:"1px solid var(--border)"}}>
               <span style={{fontSize:18}}>{catOf(f.category).icon}</span>
               <div style={{flex:1}}>
                 <div style={{fontSize:14,fontWeight:600}}>{f.name}</div>
-                <div style={{fontSize:11,color:"var(--text-faint)"}}>verso il giorno {f.day}</div>
+                <div style={{fontSize:11,color:"var(--text-faint)"}}>verso il {fmtDate(f.due)} · tra {f.inDays} giorni</div>
               </div>
               <div className="num" style={{fontWeight:700}}>{eur(f.amount)}</div>
               <button onClick={()=>onPayFixed(f)} style={{...btnG,padding:"6px 10px",fontSize:12}}>Pagata ✓</button>
@@ -727,15 +771,33 @@ function Home({stats,cycle,onPayFixed,recent,onAdd,onImport,onEdit,onOpenSetting
 // ─── Schermata: Movimenti ──────────────────────────────────────────────────
 function Movements({txs,allTxs,budget,cycle,setCycle,onDelete,onEdit,onAdd,onImport,initialFilter,onReimbArrived}){
   const [filter,setFilter]=useState(initialFilter||"all");
-  const list = txs.filter(t=>inCycle(t,cycle,budget.payday))
+  const [q,setQ]=useState("");
+  // ricerca su TUTTI i mesi: descrizione, categoria, trasferta, nota PDF/notifica o importo (es. "12,99")
+  const qn=normName(q); const qa=parseAmount(q);
+  const matchQ=t=>{ if(!q.trim()) return true;
+    if(qa!=null && /^[\d.,\s€]+$/.test(q.trim())) return Math.abs(t.amount-qa)<0.005 || String(t.amount.toFixed(2)).replace(".",",").startsWith(q.trim().replace("€","").trim());
+    const hay=normName([t.note,catOf(t.category).label,t.trip,t.file,(t.items||[]).join(" ")].filter(Boolean).join(" "));
+    return qn.split(" ").every(w=>hay.includes(w)); };
+  const searching=!!q.trim();
+  const list = txs.filter(t=>searching || inCycle(t,cycle,budget.payday)).filter(matchQ)
     .filter(t=>filter==="all"||t.type===filter)
     .sort((a,b)=>new Date(b.date)-new Date(a.date));
   const groups=[]; list.forEach(t=>{const k=new Date(t.date).toDateString(); const g=groups.find(g=>g.k===k); g?g.items.push(t):groups.push({k,d:t.date,items:[t]});});
   return (
     <div className="fade" style={{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:12}}>
       <QuickActions onAdd={onAdd} onImport={onImport}/>
-      <CycleNav cycle={cycle} setCycle={setCycle} payday={budget.payday}/>
-      {cycle.start<budget.start && <div style={{fontSize:12,color:"var(--text-dim)",background:"var(--surface-2)",border:"1px solid var(--border)",borderRadius:12,padding:"8px 12px"}}>{cycle.end<=budget.start?"📜 Mese precedente all'inizio del bilancio: qui vedi solo lo storico, non entra nei conti.":`📅 Il bilancio parte dal ${fmtDate(budget.start)}: i movimenti prima non entrano nei conti.`}</div>}
+      <div style={{position:"relative"}}>
+        <input style={{...inputS,paddingLeft:38}} placeholder="Cerca in tutti i mesi (es. Netflix, pedaggi, 12,99)" value={q} onChange={e=>setQ(e.target.value)}/>
+        <span style={{position:"absolute",left:13,top:12,fontSize:16,opacity:.6}}>🔎</span>
+        {searching && <button aria-label="Cancella ricerca" onClick={()=>setQ("")} style={{position:"absolute",right:8,top:7,background:"none",border:"none",color:"var(--text-faint)",fontSize:18,padding:6}}>✕</button>}
+      </div>
+      {searching ? (
+        <div style={{...card,padding:"10px 14px",display:"flex",justifyContent:"space-between",gap:10,fontSize:13}}>
+          <span><b>{list.length}</b> {list.length===1?"movimento trovato":"movimenti trovati"} in tutti i mesi</span>
+          <span className="num">{(()=>{const o=list.filter(t=>t.type==="out").reduce((a,t)=>a+t.amount,0), i=list.filter(t=>t.type==="in").reduce((a,t)=>a+t.amount,0); return [o&&`−${eur(o)}`,i&&`+${eur(i)}`].filter(Boolean).join(" · ")||"—";})()}</span>
+        </div>
+      ) : <CycleNav cycle={cycle} setCycle={setCycle} payday={budget.payday}/>}
+      {!searching && cycle.start<budget.start && <div style={{fontSize:12,color:"var(--text-dim)",background:"var(--surface-2)",border:"1px solid var(--border)",borderRadius:12,padding:"8px 12px"}}>{cycle.end<=budget.start?"📜 Mese precedente all'inizio del bilancio: qui vedi solo lo storico, non entra nei conti.":`📅 Il bilancio parte dal ${fmtDate(budget.start)}: i movimenti prima non entrano nei conti.`}</div>}
       <div style={{display:"flex",gap:8}}>
         {[["all","Tutti"],["out","Uscite"],["in","Entrate"],["reimb","🧾 Rimborsi"]].map(([k,l])=>(
           <button key={k} onClick={()=>setFilter(k)} style={{...btnG,padding:"7px 14px",fontSize:13,background:filter===k?"var(--grad)":"var(--surface-2)",borderColor:filter===k?"transparent":"var(--border)"}}>{l}</button>
@@ -743,7 +805,7 @@ function Movements({txs,allTxs,budget,cycle,setCycle,onDelete,onEdit,onAdd,onImp
       </div>
       {filter==="reimb" ? <ReimbView allTxs={allTxs} onEdit={onEdit} onReimbArrived={onReimbArrived}/> :
       <div style={card}>
-        {groups.length===0 && <div style={{fontSize:13,color:"var(--text-dim)"}}>Nessun movimento in questo mese.</div>}
+        {groups.length===0 && <div style={{fontSize:13,color:"var(--text-dim)"}}>{searching?"Nessun movimento corrisponde alla ricerca.":"Nessun movimento in questo mese."}</div>}
         {groups.map(g=>(
           <div key={g.k} style={{marginBottom:6}}>
             <div style={{fontSize:11,fontWeight:700,color:"var(--text-dim)",textTransform:"uppercase",marginTop:8}}>{fmtLong(g.d)}</div>
@@ -1441,7 +1503,53 @@ function Stats({txs,budget,now}){
 }
 
 // ─── Schermata: Impostazioni ───────────────────────────────────────────────
-function Settings({budget,saveBudget,txs,user,onLogout,autoStart,userCats,saveCats,createCat}){
+// ─── Backup completo ──────────────────────────────────────────────────────
+// Tutto quello che è tuo (users/{uid}/…) + i dati della sezione Benzina (refuels, settings).
+const BACKUP_COLLS = ["transactions","shopping","collette","offerte","meta"];
+async function buildBackup(fb,uid){
+  const {db,collection,getDocs}=fb;
+  const grab=async(...p)=>{ const snap=await getDocs(collection(db,...p)); return snap.docs.map(d=>({id:d.id,...d.data()})); };
+  const user={}; for(const c of BACKUP_COLLS) user[c]=await grab("users",uid,c);
+  return {app:"GalleggiApp",version:APP_VERSION,exportedAt:new Date().toISOString(),user,benzina:{refuels:await grab("refuels"),settings:await grab("settings")}};
+}
+async function restoreBackup(fb,uid,data){
+  const {db,doc,writeBatch}=fb; const ops=[];
+  BACKUP_COLLS.forEach(c=>(data.user&&data.user[c]||[]).forEach(({id,...v})=>ops.push([doc(db,"users",uid,c,id),v])));
+  ((data.benzina&&data.benzina.refuels)||[]).forEach(({id,...v})=>ops.push([doc(db,"refuels",id),{id,...v}]));
+  ((data.benzina&&data.benzina.settings)||[]).forEach(({id,...v})=>ops.push([doc(db,"settings",id),v]));
+  for(let i=0;i<ops.length;i+=400){ const b=writeBatch(db); ops.slice(i,i+400).forEach(([r,v])=>b.set(r,v)); await b.commit(); }
+  return ops.length;
+}
+function BackupCard({fb,user}){
+  const [busy,setBusy]=useState(null); const [msg,setMsg]=useState(null);
+  const download=async()=>{ setBusy("down"); setMsg(null);
+    try{ const data=await buildBackup(fb,user.uid);
+      const n=Object.values(data.user).reduce((a,l)=>a+l.length,0)+data.benzina.refuels.length;
+      const blob=new Blob([JSON.stringify(data,null,1)],{type:"application/json"});
+      const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`galleggiapp-backup-${toInputDate(new Date())}.json`; a.click();
+      setMsg(`✓ Backup scaricato: ${n} elementi`);
+    }catch(e){ setMsg("Errore: "+(e.message||e)); } setBusy(null); };
+  const restore=async file=>{ setMsg(null);
+    try{ const data=JSON.parse(await file.text());
+      if(data.app!=="GalleggiApp"||!data.user) { setMsg("Questo file non è un backup di GalleggiApp."); return; }
+      const n=Object.values(data.user).reduce((a,l)=>a+(l||[]).length,0)+((data.benzina&&data.benzina.refuels)||[]).length;
+      if(!confirm(`Ripristinare ${n} elementi dal backup del ${new Date(data.exportedAt).toLocaleString("it-IT")} (v${data.version})?\n\nGli elementi con lo stesso codice vengono sovrascritti con la versione del backup; quelli creati dopo il backup restano. Non viene cancellato niente.`)) return;
+      setBusy("up"); const k=await restoreBackup(fb,user.uid,data); setMsg(`✓ Ripristinati ${k} elementi`);
+    }catch(e){ setMsg("Errore: "+(e.message||e)); } setBusy(null); };
+  return (
+    <div style={card}>
+      <div style={{fontWeight:700}}>💾 Backup completo</div>
+      <div style={{fontSize:12,color:"var(--text-faint)",margin:"4px 0 10px",lineHeight:1.45}}>Un file con tutto: movimenti, bilancio, categorie, lista, Salvadanaio e Benzina. I dati sono già salvati su Firebase; il backup è una copia in più da tenere tu (per esempio su Google Drive).</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+        <button disabled={!!busy} onClick={download} style={{...btnP,fontSize:14,padding:"11px 8px"}}>{busy==="down"?"Preparo…":"⬇️ Scarica backup"}</button>
+        <label style={{...btnG,textAlign:"center",cursor:"pointer",fontSize:14,padding:"11px 8px",opacity:busy?.6:1}}>{busy==="up"?"Ripristino…":"⬆️ Ripristina"}
+          <input type="file" accept="application/json,.json" style={{display:"none"}} disabled={!!busy} onChange={e=>{const f=e.target.files[0]; e.target.value=""; if(f) restore(f);}}/></label>
+      </div>
+      {msg && <div style={{fontSize:12,color:msg.startsWith("✓")?"var(--green)":"var(--red)",marginTop:8}}>{msg}</div>}
+    </div>
+  );
+}
+function Settings({fb,budget,saveBudget,txs,user,onLogout,autoStart,userCats,saveCats,createCat}){
   const [newCat,setNewCat]=useState(null); // "out" | "in" | null
   const [limits,setLimits]=useState(()=>Object.fromEntries(Object.entries(budget.limits||{}).map(([k,v])=>[k,String(v).replace(".",",")])));
   const [limSaved,setLimSaved]=useState(false);
@@ -1556,6 +1664,8 @@ function Settings({budget,saveBudget,txs,user,onLogout,autoStart,userCats,saveCa
           <button onClick={addFixed} style={btnG}>+ Aggiungi spesa fissa</button>
         </div>
       </div>
+
+      <BackupCard fb={fb} user={user}/>
 
       <div style={card}>
         <div style={{fontWeight:700,marginBottom:8}}>Dati</div>
@@ -3381,6 +3491,33 @@ function App(){
   const trips = [...new Set(txRows.filter(t=>t.trip).sort((a,b)=>new Date(b.date)-new Date(a.date)).map(t=>t.trip))].slice(0,12);
   const [movFilter,setMovFilter]=useState(null);
   const openReimb=()=>{ setMovFilter("reimb"); setTab("mov"); };
+  // ── spese che si ripetono ogni mese (abbonamenti, bollette…) non ancora tra le fisse
+  const recurring = useMemo(()=>{
+    if(!budgetLoaded) return [];
+    const now=new Date(), pd=budget.payday, cur=cycleOf(now,pd);
+    const last=[0,1,2,3].map(i=>shiftCycle(cur,-i,pd));
+    const fixedNames=(budget.fixed||[]).map(f=>normName(f.name));
+    const dismissed=new Set(budget.dismissedRecurring||[]);
+    const groups={};
+    txRows.filter(t=>t.type==="out" && !t.fixedId && !t.reimb && t.source!=="benzinapp" && (t.note||"").trim().length>=3).forEach(t=>{
+      const k=normName(t.note); if(!k) return; (groups[k]=groups[k]||[]).push(t); });
+    const out=[];
+    Object.entries(groups).forEach(([k,l])=>{
+      if(dismissed.has(k) || fixedNames.some(f=>f && (f.includes(k)||k.includes(f)))) return;
+      const inLast=l.filter(t=>last.some(c=>inCycle(t,c,pd)));
+      const cyc=new Set(inLast.map(t=>cycleOf(new Date(t.date),pd).key));
+      if(cyc.size<2 || inLast.length>cyc.size*1.5) return;          // almeno 2 mesi, circa una volta al mese
+      const am=inLast.map(t=>t.amount).sort((a,b)=>a-b), med=am[Math.floor(am.length/2)];
+      if(am.some(a=>Math.abs(a-med)>Math.max(1,med*0.15))) return;  // importo quasi uguale ogni volta
+      const days=inLast.map(t=>new Date(t.date).getDate()).sort((a,b)=>a-b);
+      const cats={}; inLast.forEach(t=>cats[t.category]=(cats[t.category]||0)+1);
+      out.push({key:k,name:inLast[inLast.length-1].note.trim(),amount:med,day:days[Math.floor(days.length/2)],category:Object.entries(cats).sort((a,b)=>b[1]-a[1])[0][0],cycles:cyc.size});
+    });
+    return out.sort((a,b)=>b.cycles-a.cycles||b.amount-a.amount);
+  },[txRows,budgetLoaded,budget.payday,JSON.stringify(budget.fixed||[]),JSON.stringify(budget.dismissedRecurring||[])]);
+  const budgetRaw=()=>{ const {start:_s,...keep}=budget; return keep; };
+  const acceptRecurring=async r=>{ await saveBudget({...budgetRaw(),fixed:[...(budget.fixed||[]),{id:uid(),name:r.name,amount:r.amount,day:r.day,category:r.category}]}); flash(`🔁 ${r.name} aggiunta alle spese fisse`); };
+  const dismissRecurring=async r=>{ await saveBudget({...budgetRaw(),dismissedRecurring:[...(budget.dismissedRecurring||[]),r.key]}); };
   const reimbArrived=g=>setAdding({type:"in",init:{type:"in",category:"rimborso",amount:Math.round(g.total*100)/100,note:`Rimborso ${g.trip}`,covers:g.list.map(t=>t.id)}});
   const delTx=async t=>{ if(!confirm(`Eliminare ${t.note||catOf(t.category).label} (${eur(t.amount)})?`)) return; const {db,doc,deleteDoc,setDoc}=fb; await deleteDoc(doc(db,"users",user.uid,"transactions",t.id));
     // se elimino un rimborso, le spese che copriva tornano "da rimborsare"
@@ -3425,13 +3562,13 @@ function App(){
       </nav>
       {txErr && <div style={{...card,borderColor:"var(--red)",marginBottom:12,fontSize:13}}>⚠️ Non riesco a leggere i dati: {txErr}. Controlla le regole di sicurezza di Firestore.</div>}
 
-      {tab==="home"  && <Home stats={stats} cycle={curCycle} onPayFixed={payFixed} recent={recent} onAdd={openAdd} onImport={()=>setImporting(true)} onEdit={openEdit} onOpenSettings={()=>setTab("set")} hasBudget={!!budgetDoc} paydayHint={paydayHint} pendingReimb={pendingReimb} onOpenReimb={openReimb} limits={budget.limits}/>}
+      {tab==="home"  && <Home stats={stats} cycle={curCycle} onPayFixed={payFixed} recent={recent} onAdd={openAdd} onImport={()=>setImporting(true)} onEdit={openEdit} onOpenSettings={()=>setTab("set")} hasBudget={!!budgetDoc} paydayHint={paydayHint} pendingReimb={pendingReimb} onOpenReimb={openReimb} limits={budget.limits} recurring={recurring} onAcceptRecurring={acceptRecurring} onDismissRecurring={dismissRecurring}/>}
       {tab==="mov"   && <Movements key={movFilter||"all"} txs={allTxs} allTxs={allTxs} budget={budget} cycle={cycle} setCycle={setCycle} onDelete={delTx} onEdit={openEdit} onAdd={openAdd} onImport={()=>setImporting(true)} initialFilter={movFilter} onReimbArrived={reimbArrived}/>}
       {tab==="lista" && <ShoppingList fb={fb} user={user} perDay={stats.perDay} onCheckout={saveTx}/>}
       {tab==="benz"  && <BenzinSection initialAmount={fuelPrefill} onInitialUsed={()=>setFuelPrefill(null)} cycleFuel={stats.list.filter(t=>t.source==="benzinapp").reduce((a,t)=>a+t.amount,0)} cycleLabelText={cycleLabel(curCycle)}/>}
       {tab==="salva" && <Salvadanaio fb={fb} user={user} onDeliver={saveTx}/>}
       {tab==="stats" && <Stats txs={txs} budget={budget} now={now}/>}
-      {tab==="set"   && <Settings budget={budget} saveBudget={saveBudget} txs={allTxs} autoStart={autoStart} userCats={USER_CATS} saveCats={saveCats} createCat={createCat} user={user} onLogout={()=>fb.signOut(fb.auth)}/>}
+      {tab==="set"   && <Settings fb={fb} budget={budget} saveBudget={saveBudget} txs={allTxs} autoStart={autoStart} userCats={USER_CATS} saveCats={saveCats} createCat={createCat} user={user} onLogout={()=>fb.signOut(fb.auth)}/>}
       {tab!=="set" && <GPverseFooter/>}
 
       {tab!=="set" && tab!=="lista" && tab!=="salva" && tab!=="benz" && (

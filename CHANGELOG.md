@@ -2,6 +2,13 @@
 
 Schema **V.maggiore.minore.patch**: *maggiore* = cambi di struttura, *minore* = nuove funzioni, *patch* = correzioni.
 
+## v2.4.0 — Blocco dell'app e ricevute (2026-11-14)
+- 🔒 Blocco dell'app con 4 metodi: PIN, sequenza disegnata, impronta, volto
+- PIN e sequenza uguali su tutti i dispositivi; impronta e volto si attivano su ogni dispositivo che li ha, con PIN di riserva
+- Blocco all'apertura e quando torni dopo 1, 5 o 15 minuti (o subito); 5 errori = attesa di 30 secondi
+- "Ho dimenticato il codice": nuovo accesso con Google e blocco disattivato
+- Import PDF: riconosce le ricevute di un singolo pagamento (PagoPA, app Telepass, bollettini, fatture) — totale, data anche nel formato "01 06 2025", causale e categoria
+
 ## v2.3.0 — Scadenze, ricerca e backup (2026-11-14)
 - 🔎 Ricerca nei movimenti su tutti i mesi: descrizione, categoria, trasferta o importo, con totale dei risultati
 - 📅 Scadenze in arrivo: le spese fisse dei prossimi 5 giorni in evidenza nel Bilancio (anche quelle scadute)

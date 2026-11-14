@@ -1,12 +1,12 @@
 <!DOCTYPE html>
-<!-- GalleggiApp v2.3.0 · un progetto GPverse · cronologia completa in CHANGELOG (in fondo al codice e nella schermata Novità) -->
+<!-- GalleggiApp v2.4.0 · un progetto GPverse · cronologia completa in CHANGELOG (in fondo al codice e nella schermata Novità) -->
 <html lang="it">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>GalleggiApp</title>
   <meta name="theme-color" content="#0b1120">
-  <meta name="version" content="2.3.0">
+  <meta name="version" content="2.4.0">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="GalleggiApp">
@@ -85,8 +85,9 @@ const { useState, useEffect, useMemo } = React;
 
 // ─── Versione ─────────────────────────────────────────────────────────────
 // Schema V.maggiore.minore.patch — maggiore: cambi di struttura · minore: nuove funzioni · patch: correzioni
-const APP_VERSION = "2.3.0";
+const APP_VERSION = "2.4.0";
 const CHANGELOG = [
+ {"v": "2.4.0", "date": "2026-11-14", "title": "Blocco dell'app e ricevute", "items": ["🔒 Blocco dell'app con 4 metodi: PIN, sequenza disegnata, impronta, volto", "PIN e sequenza uguali su tutti i dispositivi; impronta e volto si attivano su ogni dispositivo che li ha, con PIN di riserva", "Blocco all'apertura e quando torni dopo 1, 5 o 15 minuti (o subito); 5 errori = attesa di 30 secondi", "\"Ho dimenticato il codice\": nuovo accesso con Google e blocco disattivato", "Import PDF: riconosce le ricevute di un singolo pagamento (PagoPA, app Telepass, bollettini, fatture) — totale, data anche nel formato \"01 06 2025\", causale e categoria"]},
  {"v": "2.3.0", "date": "2026-11-14", "title": "Scadenze, ricerca e backup", "items": ["🔎 Ricerca nei movimenti su tutti i mesi: descrizione, categoria, trasferta o importo, con totale dei risultati", "📅 Scadenze in arrivo: le spese fisse dei prossimi 5 giorni in evidenza nel Bilancio (anche quelle scadute)", "🔁 Riconosce le spese che si ripetono ogni mese (abbonamenti, bollette) e propone di aggiungerle alle fisse", "Corretto: una spesa fissa inserita come spesa normale (a mano, da notifica o PDF) non viene più contata due volte", "💾 Backup completo in un file (movimenti, bilancio, categorie, lista, Salvadanaio, Benzina) e ripristino senza cancellare niente"]},
  {"v": "2.2.1", "date": "2026-11-13", "title": "Salvadanaio solo per i progetti", "items": ["Il Salvadanaio resta separato dal risparmio mensile: è per collette e progetti particolari (Quaresima, Avvento, fioretti)", "Tolta l'idea pronta \"Fondo emergenze\", aggiunta \"Raccolta per una causa\""]},
  {"v": "2.2.0", "date": "2026-11-13", "title": "Trasferte e limiti", "items": ["🧾 Spese di trasferta da rimborsare: le segni con il nome della trasferta, non contano nel ritmo di spesa", "Filtro \"🧾 Rimborsi\" in Movimenti: totale in attesa diviso per trasferta e nota spese da condividere o copiare", "\"Rimborso arrivato\": registra l'entrata e chiude le spese coperte; se elimini il rimborso tornano in attesa", "In Bilancio: quanto aspetti di rimborso e dove arriveresti a fine mese quando arriva", "🎯 Limiti mensili per categoria in ⚙️, con barre e tacca del punto del mese in Bilancio", "Avviso quando una spesa ti porta all'80% o oltre il limite della categoria"]},
@@ -1503,6 +1504,206 @@ function Stats({txs,budget,now}){
 }
 
 // ─── Schermata: Impostazioni ───────────────────────────────────────────────
+// ─── Blocco dell'app: PIN, sequenza, impronta, volto ──────────────────────
+// PIN e sequenza: salvati come impronta crittografica (SHA-256 con sale) in users/{uid}/meta/security,
+// quindi valgono uguali su PC e telefono. Impronta e volto usano il sensore del dispositivo (WebAuthn):
+// la "chiave" resta sul dispositivo, per questo serve anche un PIN di riserva per gli altri dispositivi.
+const LOCK_METHODS = {
+  pin:        {icon:"🔢", label:"PIN"},
+  pattern:    {icon:"✍️", label:"Sequenza"},
+  fingerprint:{icon:"👆", label:"Impronta"},
+  face:       {icon:"🙂", label:"Volto"},
+};
+const isBio = m => m==="fingerprint" || m==="face";
+async function hashSecret(salt, secret){
+  const buf=await crypto.subtle.digest("SHA-256", new TextEncoder().encode(salt+"|"+secret));
+  return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+const unb64u = s => Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/")+"===".slice((s.length+3)%4)), c=>c.charCodeAt(0));
+const bioKey = uid => "galleggiapp_bio_"+uid;
+async function bioAvailable(){
+  try{ return !!(window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()); }catch(e){ return false; }
+}
+async function bioRegister(user){
+  const cred=await navigator.credentials.create({publicKey:{
+    challenge:crypto.getRandomValues(new Uint8Array(32)),
+    rp:{name:"GalleggiApp", id:location.hostname},
+    user:{id:new TextEncoder().encode(user.uid).slice(0,64), name:user.email||"utente", displayName:user.displayName||user.email||"GalleggiApp"},
+    pubKeyCredParams:[{type:"public-key",alg:-7},{type:"public-key",alg:-257}],
+    authenticatorSelection:{authenticatorAttachment:"platform", userVerification:"required", residentKey:"discouraged"},
+    timeout:60000, attestation:"none"}});
+  const id=b64u(cred.rawId); try{ localStorage.setItem(bioKey(user.uid),id); }catch(e){}
+  return id;
+}
+async function bioVerify(uid){
+  let id=null; try{ id=localStorage.getItem(bioKey(uid)); }catch(e){}
+  if(!id) throw new Error("no-cred");
+  await navigator.credentials.get({publicKey:{challenge:crypto.getRandomValues(new Uint8Array(32)), allowCredentials:[{type:"public-key",id:unb64u(id)}], userVerification:"required", timeout:60000, rpId:location.hostname}});
+  return true;
+}
+const hasLocalBio = uid => { try{ return !!localStorage.getItem(bioKey(uid)); }catch(e){ return false; } };
+
+function PinPad({length=null,onDone,error,hint}){
+  const [v,setV]=useState("");
+  useEffect(()=>{ if(error) setV(""); },[error]);
+  const press=d=>{ const n=(v+d).slice(0,8); setV(n); if(length && n.length===length) setTimeout(()=>{onDone(n);setV("");},120); };
+  const keys=["1","2","3","4","5","6","7","8","9","",  "0","⌫"];
+  return (
+    <div style={{display:"grid",justifyItems:"center",gap:14}}>
+      <div style={{display:"flex",gap:12,height:18}}>{Array.from({length:length||Math.max(4,v.length)}).map((_,i)=><span key={i} style={{width:14,height:14,borderRadius:"50%",border:"2px solid var(--text-dim)",background:i<v.length?"var(--text)":"transparent"}}/>)}</div>
+      {hint && <div style={{fontSize:12,color:"var(--text-faint)"}}>{hint}</div>}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,72px)",gap:12}}>
+        {keys.map((k,i)=> k==="" ? <span key={i}/> :
+          <button key={i} aria-label={k==="⌫"?"Cancella":k} onClick={()=>k==="⌫"?setV(v.slice(0,-1)):press(k)} style={{width:72,height:72,borderRadius:"50%",border:"1px solid var(--border)",background:"var(--surface-2)",color:"var(--text)",fontSize:26,fontWeight:600}}>{k}</button>)}
+      </div>
+      {!length && <button disabled={v.length<4} onClick={()=>{onDone(v);setV("");}} style={{...btnP,minWidth:200}}>Conferma</button>}
+    </div>
+  );
+}
+function PatternPad({onDone,error,size=270}){
+  const [seq,setSeq]=useState([]); const [cur,setCur]=useState(null); const [drawing,setDrawing]=useState(false);
+  const ref=React.useRef(null);
+  useEffect(()=>{ if(error){ setSeq([]); } },[error]);
+  const pts=[...Array(9)].map((_,i)=>({x:(i%3+0.5)*size/3,y:(Math.floor(i/3)+0.5)*size/3}));
+  const pos=e=>{ const r=ref.current.getBoundingClientRect(); const t=e.touches?e.touches[0]:e; return {x:t.clientX-r.left,y:t.clientY-r.top}; };
+  const hit=(p,s)=>{ const i=pts.findIndex(q=>Math.hypot(q.x-p.x,q.y-p.y)<size/9); return i>=0&&!s.includes(i)?i:null; };
+  const start=e=>{ e.preventDefault(); const p=pos(e); const i=hit(p,[]); setDrawing(true); setSeq(i!=null?[i]:[]); setCur(p); };
+  const move=e=>{ if(!drawing) return; e.preventDefault(); const p=pos(e); setCur(p); setSeq(s=>{ const i=hit(p,s); return i!=null?[...s,i]:s; }); };
+  const end=()=>{ if(!drawing) return; setDrawing(false); setCur(null); const s=seq; setTimeout(()=>{ if(s.length) onDone(s.join("-")); setSeq([]); },150); };
+  return (
+    <div ref={ref} onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end} onTouchStart={start} onTouchMove={move} onTouchEnd={end}
+      style={{width:size,height:size,position:"relative",touchAction:"none",userSelect:"none",cursor:"pointer"}}>
+      <svg width={size} height={size} style={{position:"absolute",inset:0}}>
+        {seq.map((i,k)=>k>0&&<line key={k} x1={pts[seq[k-1]].x} y1={pts[seq[k-1]].y} x2={pts[i].x} y2={pts[i].y} stroke={error?"#f0596e":"#8b5cf6"} strokeWidth="6" strokeLinecap="round"/>)}
+        {drawing&&cur&&seq.length>0&&<line x1={pts[seq[seq.length-1]].x} y1={pts[seq[seq.length-1]].y} x2={cur.x} y2={cur.y} stroke="#8b5cf6" strokeOpacity=".5" strokeWidth="5" strokeLinecap="round"/>}
+        {pts.map((p,i)=><g key={i}><circle cx={p.x} cy={p.y} r={size/9} fill="transparent"/><circle cx={p.x} cy={p.y} r={seq.includes(i)?14:9} fill={seq.includes(i)?"#8b5cf6":"var(--text-dim)"}/></g>)}
+      </svg>
+    </div>
+  );
+}
+
+function LockScreen({sec,user,onUnlock,onForgot}){
+  const bio=isBio(sec.method) && hasLocalBio(user.uid);
+  const fallback = sec.patternHash && !sec.pinHash ? "pattern" : "pin";
+  const [mode,setMode]=useState(bio?"bio":(sec.method==="pattern"?"pattern":fallback));
+  const [err,setErr]=useState(null); const [tries,setTries]=useState(0); const [waitUntil,setWaitUntil]=useState(0); const [, tick]=useState(0);
+  useEffect(()=>{ if(waitUntil>Date.now()){ const t=setInterval(()=>tick(x=>x+1),500); return ()=>clearInterval(t);} },[waitUntil]);
+  const wait=Math.max(0,Math.ceil((waitUntil-Date.now())/1000));
+  const tryBio=async()=>{ setErr(null); try{ await bioVerify(user.uid); onUnlock(); }catch(e){ setErr(e.message==="no-cred"?"Su questo dispositivo non è attivo: usa il codice di riserva.":"Riconoscimento non riuscito. Riprova o usa il codice di riserva."); } };
+  useEffect(()=>{ if(mode==="bio") tryBio(); },[]);
+  const check=async(kind,val)=>{
+    if(wait) return;
+    const ok = (await hashSecret(sec.salt,val)) === (kind==="pin"?sec.pinHash:sec.patternHash);
+    if(ok){ onUnlock(); return; }
+    const n=tries+1; setTries(n); setErr(n>=5?"Troppi tentativi: aspetta 30 secondi.":kind==="pin"?"PIN sbagliato":"Sequenza sbagliata");
+    if(n>=5){ setWaitUntil(Date.now()+30000); setTries(0); }
+  };
+  const M=LOCK_METHODS[sec.method]||LOCK_METHODS.pin;
+  return (
+    <div style={{minHeight:"100vh",display:"grid",placeItems:"center",padding:"24px 16px"}}>
+      <div style={{display:"grid",justifyItems:"center",gap:16,textAlign:"center",width:"100%",maxWidth:360}}>
+        <img src="data:image/png;base64,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" alt="" style={{width:64,height:64,borderRadius:16}}/>
+        <div><div style={{fontSize:22,fontWeight:800}}>🔒 GalleggiApp è bloccata</div>
+          <div style={{fontSize:13,color:"var(--text-dim)",marginTop:4}}>{mode==="bio"?`Sblocca con ${M.label.toLowerCase()}`:mode==="pin"?"Inserisci il PIN":"Disegna la sequenza"}</div></div>
+        {mode==="bio" && <button onClick={tryBio} style={{width:110,height:110,borderRadius:"50%",border:"2px solid var(--violet)",background:"var(--surface-2)",fontSize:52}}>{M.icon}</button>}
+        {mode==="pin" && <PinPad length={sec.pinLen||null} error={err} onDone={v=>check("pin",v)}/>}
+        {mode==="pattern" && <PatternPad error={err} onDone={v=>check("pattern",v)}/>}
+        {err && <div style={{color:"var(--red)",fontSize:13,fontWeight:600}}>{wait?`Troppi tentativi: aspetta ${wait} s`:err}</div>}
+        <div style={{display:"flex",gap:14,flexWrap:"wrap",justifyContent:"center"}}>
+          {mode!=="bio" && bio && <button onClick={()=>{setMode("bio");tryBio();}} style={{background:"none",border:"none",color:"var(--cyan)",fontSize:13,textDecoration:"underline"}}>Usa {M.label.toLowerCase()}</button>}
+          {mode!=="pin" && sec.pinHash && <button onClick={()=>{setErr(null);setMode("pin");}} style={{background:"none",border:"none",color:"var(--cyan)",fontSize:13,textDecoration:"underline"}}>Usa il PIN</button>}
+          {mode!=="pattern" && sec.patternHash && <button onClick={()=>{setErr(null);setMode("pattern");}} style={{background:"none",border:"none",color:"var(--cyan)",fontSize:13,textDecoration:"underline"}}>Usa la sequenza</button>}
+        </div>
+        <button onClick={onForgot} style={{background:"none",border:"none",color:"var(--text-faint)",fontSize:12,textDecoration:"underline",marginTop:10}}>Ho dimenticato il codice: accedi di nuovo con Google</button>
+      </div>
+    </div>
+  );
+}
+
+function LockSettings({fb,user,sec,onBeforeEnable}){
+  const [flow,setFlow]=useState(null);   // {method, step, first, pinFirst}
+  const [err,setErr]=useState(null); const [bioOk,setBioOk]=useState(null); const [busy,setBusy]=useState(false);
+  useEffect(()=>{ bioAvailable().then(setBioOk); },[]);
+  const ref=fb.doc(fb.db,"users",user.uid,"meta","security");
+  const save=async patch=>{ onBeforeEnable(); const salt=(sec&&sec.salt)||b64u(crypto.getRandomValues(new Uint8Array(16))); await fb.setDoc(ref,{after:1,...(sec||{}),salt,...patch,enabled:true,updatedAt:new Date().toISOString()}); };
+  const start=m=>{ setErr(null); if(isBio(m)&&!bioOk){ setErr(`Questo dispositivo non ha ${m==="face"?"il riconoscimento del volto":"il lettore di impronte"} disponibile per le app web. Scegli PIN o sequenza, oppure attivalo dal telefono.`); return; }
+    setFlow({method:m, step: m==="pattern"?"pattern1":"pin1"}); };
+  // passi: pin1 → pin2 → (bio) ; pattern1 → pattern2
+  const onPin=async v=>{
+    if(v.length<4){ setErr("Almeno 4 cifre"); return; }
+    if(flow.step==="pin1"){ setErr(null); setFlow({...flow,step:"pin2",first:v}); return; }
+    if(v!==flow.first){ setErr("I due PIN non coincidono, riprova"); setFlow({...flow,step:"pin1",first:null}); return; }
+    setBusy(true);
+    try{
+      const salt=(sec&&sec.salt)||b64u(crypto.getRandomValues(new Uint8Array(16)));
+      const pinHash=await hashSecret(salt,v);
+      if(isBio(flow.method)) await bioRegister(user);
+      onBeforeEnable(); await fb.setDoc(ref,{after:1,...(sec||{}),salt,pinHash,pinLen:v.length,method:flow.method,enabled:true,updatedAt:new Date().toISOString()});
+      setFlow(null); setErr(null);
+    }catch(e){ setErr(e.name==="NotAllowedError"?"Registrazione annullata o non permessa dal dispositivo.":"Errore: "+(e.message||e)); }
+    setBusy(false);
+  };
+  const onPattern=async v=>{
+    if(v.split("-").length<4){ setErr("Collega almeno 4 punti"); return; }
+    if(flow.step==="pattern1"){ setErr(null); setFlow({...flow,step:"pattern2",first:v}); return; }
+    if(v!==flow.first){ setErr("Le due sequenze non coincidono, riprova"); setFlow({...flow,step:"pattern1",first:null}); return; }
+    const salt=(sec&&sec.salt)||b64u(crypto.getRandomValues(new Uint8Array(16)));
+    onBeforeEnable(); await fb.setDoc(ref,{after:1,...(sec||{}),salt,patternHash:await hashSecret(salt,v),method:"pattern",enabled:true,updatedAt:new Date().toISOString()});
+    setFlow(null); setErr(null);
+  };
+  const enabled=sec&&sec.enabled; const M=enabled&&LOCK_METHODS[sec.method];
+  return (
+    <div style={card}>
+      <div style={{fontWeight:700}}>🔒 Blocco dell'app</div>
+      <div style={{fontSize:12,color:"var(--text-faint)",margin:"4px 0 10px",lineHeight:1.45}}>Chiede di sbloccare l'app quando la apri o ci torni dopo un po'. PIN e sequenza valgono su tutti i tuoi dispositivi; impronta e volto si attivano su ogni dispositivo che li ha, con un PIN di riserva per gli altri (es. il PC).</div>
+      {enabled ? (
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"var(--surface-2)",borderRadius:12}}>
+            <span style={{fontSize:24}}>{M.icon}</span><div style={{flex:1}}><b>Attivo: {M.label}</b>
+              <div style={{fontSize:11,color:"var(--text-faint)"}}>{isBio(sec.method)?(hasLocalBio(user.uid)?"attivo su questo dispositivo · PIN di riserva impostato":"non attivo su questo dispositivo: qui si usa il PIN di riserva"):"uguale su tutti i dispositivi"}</div></div>
+          </div>
+          {isBio(sec.method) && !hasLocalBio(user.uid) && bioOk && <button onClick={async()=>{try{await bioRegister(user);setErr(null);setFlow(f=>f);setBioOk(true);}catch(e){setErr("Registrazione annullata.");}}} style={{...btnG,width:"100%",marginTop:8}}>{M.icon} Attiva {M.label.toLowerCase()} su questo dispositivo</button>}
+          <div style={{marginTop:10}}><span style={label}>Blocca quando torno dopo</span>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{[[0,"subito"],[1,"1 min"],[5,"5 min"],[15,"15 min"]].map(([m,l])=>
+              <button key={m} onClick={()=>fb.setDoc(ref,{...sec,after:m})} style={{...btnG,padding:"7px 12px",fontSize:13,background:(sec.after??1)===m?"var(--grad)":"var(--surface-2)",borderColor:(sec.after??1)===m?"transparent":"var(--border)"}}>{l}</button>)}</div></div>
+          <div style={{display:"flex",gap:8,marginTop:12}}>
+            <button onClick={()=>setFlow({pick:true})} style={{...btnG,flex:1}}>Cambia metodo</button>
+            <button onClick={async()=>{ if(!confirm("Disattivare il blocco dell'app?")) return; try{localStorage.removeItem(bioKey(user.uid));}catch(e){} await fb.setDoc(ref,{salt:sec.salt,enabled:false,after:sec.after??1}); }} style={{...btnG,color:"var(--red)"}}>Disattiva</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={()=>setFlow({pick:true})} style={{...btnP,width:"100%"}}>Attiva il blocco</button>
+      )}
+      {err && !flow && <div style={{fontSize:12,color:"var(--red)",marginTop:8}}>{err}</div>}
+      {flow && (
+        <Sheet onClose={()=>{setFlow(null);setErr(null);}}>
+          {flow.pick ? (<>
+            <div style={{fontWeight:800,fontSize:17,marginBottom:12}}>Come vuoi sbloccare l'app?</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              {Object.entries(LOCK_METHODS).map(([k,m])=>(
+                <button key={k} onClick={()=>start(k)} style={{...btnG,padding:"16px 8px",display:"grid",gap:4,justifyItems:"center",opacity:isBio(k)&&bioOk===false?.5:1}}>
+                  <span style={{fontSize:30}}>{m.icon}</span><b>{m.label}</b>
+                  <span style={{fontSize:11,color:"var(--text-faint)",fontWeight:400}}>{k==="pin"?"4–8 cifre":k==="pattern"?"collega i punti":bioOk===false?"non disponibile qui":"+ PIN di riserva"}</span>
+                </button>))}
+            </div>
+            {err && <div style={{fontSize:12,color:"var(--red)",marginTop:10,lineHeight:1.4}}>{err}</div>}
+            <div style={{fontSize:11,color:"var(--text-faint)",marginTop:10,lineHeight:1.4}}>Impronta e volto usano lo sblocco biometrico del dispositivo: il telefono usa quello che hai configurato nelle sue impostazioni (se li hai entrambi, decide lui quale proporre).</div>
+          </>) : (
+            <div style={{display:"grid",justifyItems:"center",gap:12,textAlign:"center"}}>
+              <div style={{fontWeight:800,fontSize:17}}>{LOCK_METHODS[flow.method].icon} {LOCK_METHODS[flow.method].label}</div>
+              <div style={{fontSize:13,color:"var(--text-dim)"}}>{flow.step==="pin1"?(isBio(flow.method)?"Scegli un PIN di riserva (4–8 cifre)":"Scegli un PIN (4–8 cifre)"):flow.step==="pin2"?"Ripeti il PIN":flow.step==="pattern1"?"Disegna una sequenza (almeno 4 punti)":"Ridisegna la stessa sequenza"}</div>
+              {flow.step.startsWith("pin") ? <PinPad key={flow.step} error={err} onDone={onPin}/> : <PatternPad key={flow.step} error={err} onDone={onPattern}/>}
+              {busy && <div style={{fontSize:12,color:"var(--text-dim)"}}>Conferma {LOCK_METHODS[flow.method].label.toLowerCase()} sul dispositivo…</div>}
+              {err && <div style={{fontSize:12,color:"var(--red)"}}>{err}</div>}
+            </div>
+          )}
+        </Sheet>
+      )}
+    </div>
+  );
+}
+
 // ─── Backup completo ──────────────────────────────────────────────────────
 // Tutto quello che è tuo (users/{uid}/…) + i dati della sezione Benzina (refuels, settings).
 const BACKUP_COLLS = ["transactions","shopping","collette","offerte","meta"];
@@ -1549,7 +1750,7 @@ function BackupCard({fb,user}){
     </div>
   );
 }
-function Settings({fb,budget,saveBudget,txs,user,onLogout,autoStart,userCats,saveCats,createCat}){
+function Settings({fb,budget,saveBudget,txs,user,onLogout,autoStart,userCats,saveCats,createCat,sec,onBeforeEnableLock}){
   const [newCat,setNewCat]=useState(null); // "out" | "in" | null
   const [limits,setLimits]=useState(()=>Object.fromEntries(Object.entries(budget.limits||{}).map(([k,v])=>[k,String(v).replace(".",",")])));
   const [limSaved,setLimSaved]=useState(false);
@@ -1665,6 +1866,8 @@ function Settings({fb,budget,saveBudget,txs,user,onLogout,autoStart,userCats,sav
         </div>
       </div>
 
+      <LockSettings fb={fb} user={user} sec={sec} onBeforeEnable={onBeforeEnableLock}/>
+
       <BackupCard fb={fb} user={user}/>
 
       <div style={card}>
@@ -1737,10 +1940,53 @@ async function pdfToLines(file, password){
   return lines;
 }
 
-function detectKind(text){
+function detectKind(text, lines){
   if(/netto\s*(a\s*pagare|del\s*mese|in\s*busta|busta|mese)|cedolino|busta\s*paga|libro\s*unico|competenze|trattenute/i.test(text)) return "busta";
+  // ricevuta di UN solo pagamento (PagoPA, app Telepass, bollettino, fattura): poche righe con data+importo
+  const datedRows = lines ? lines.filter(l=>dateIn(l.text) && amountsIn(l.text.replace(DATE_RE,"")).length).length : 0;
+  if(/ricevuta|quietanza|pagopa|transazione eseguita|bollettino|importo totale|totale da pagare|fattura n/i.test(text) && datedRows<3) return "ricevuta";
   if(/telepass|unipolmove|autostrad|casello|pedagg/i.test(text)) return "pedaggi";
   return "generico";
+}
+// data anche nei formati "01 06 2025" e "1 giugno 2025"
+function anyDateIn(s){
+  const d=dateIn(s); if(d) return d;
+  let m=s.match(/\b(\d{1,2})\s+(\d{1,2})\s+(20\d{2})\b/); if(m){ const x=new Date(+m[3],+m[2]-1,+m[1],12); if(+m[2]>=1&&+m[2]<=12&&+m[1]>=1&&+m[1]<=31) return x; }
+  m=s.match(new RegExp("\\b(\\d{1,2})\\s+("+MONTHS_FULL.join("|")+")\\s+(20\\d{2})\\b","i")); if(m) return new Date(+m[3],MONTHS_FULL.indexOf(m[2].toLowerCase()),+m[1],12);
+  return null;
+}
+const RECEIPT_CATS = [
+  [/tassa automobilistica|bollo auto|assicurazion|rca\b|revisione|carrozzer|officina|meccanic|gomme|pneumatic/i,"trasporti"],
+  [/pedagg|autostrad|casello/i,"pedaggi"], [/parchegg|sosta|strisce blu/i,"trasporti"],
+  [/tari\b|rifiuti|acqua|idric|energia|luce|gas\b|bollett/i,"bollette"],
+  [/ticket|sanitari|asl\b|ats\b|farmac|visita|medic/i,"salute"],
+  [/canone rai|abbonament/i,"abbonamenti"], [/multa|sanzione|verbale|contravvenzion/i,"altro"],
+];
+function parseReceipt(lines){
+  const T=lines.map(l=>l.text);
+  const near=(i)=>{ for(let j=i;j<=Math.min(i+2,T.length-1);j++){ const a=amountsIn(j===i?T[j].replace(/^.*?(totale|importo|pagato|pagare)/i,""):T[j]).filter(v=>v>0); if(a.length) return a[0]; } return null; };
+  // importo: "importo totale" > "totale" > "importo pagato/importo", mai commissioni o costi operazione
+  let amount=null;
+  for(const re of [/importo totale|totale (da )?pagare|totale pagato|totale complessivo/i,/\btotale\b/i,/importo (pagato|dell.operazione|versato)|\bimporto\b/i]){
+    for(let i=0;i<T.length && amount==null;i++){ if(re.test(T[i]) && !/costo|commission|di cui|iva\b|imponibile/i.test(T[i])) amount=near(i); }
+    if(amount!=null) break;
+  }
+  if(amount==null){ const all=T.flatMap(t=>amountsIn(t)).filter(v=>v>0); if(all.length) amount=Math.max(...all); }
+  // data: preferisco righe con "data"/"eseguit"/"pagamento", altrimenti la prima trovata
+  let date=null;
+  for(let i=0;i<T.length && !date;i++){ if(/data|eseguit|del pagamento|emissione/i.test(T[i])) date=anyDateIn(T[i])||anyDateIn(T[i+1]||""); }
+  if(!date) for(const t of T){ date=anyDateIn(t); if(date) break; }
+  // descrizione: causale / dettaglio / ente
+  let note="";
+  for(const re of [/(dettaglio operazione di pagamento|causale|descrizione|oggetto)\s*:\s*(.+)/i,/(ente creditore|beneficiario|esercente|fornitore)\s*:\s*(.+)/i]){
+    for(const t of T){ const m=t.match(re); if(m){ note=m[2].replace(/\/\s*\d{6,}.*$/,"").trim(); break; } }
+    if(note) break;
+  }
+  note=note.replace(/\s+/g," ").slice(0,60) || "Pagamento";
+  const text=T.join(" ");
+  let category="altro"; for(const [re,c] of RECEIPT_CATS) if(re.test(note+" "+text)){ category=c; break; }
+  if(amount==null) return [];
+  return [{type:"out",category,amount,date:date||new Date(),note:note.charAt(0).toUpperCase()+note.slice(1).toLowerCase()}];
 }
 
 function findPayPeriod(text){
@@ -1832,8 +2078,8 @@ function ImportModal({onClose,onSaveMany,txs,payday}){
         const text=lines.map(l=>l.text).join("\n");
         raw+=`===== ${f.name} =====\n${text}\n\n`;
         if(text.replace(/\s/g,"").length<30){ inf.push({name:f.name,msg:"nessun testo leggibile: sembra una scansione/foto, va inserito a mano"}); continue; }
-        const kind=detectKind(text);
-        const found = kind==="busta" ? parsePayslip(lines,payday) : parseRows(lines,kind);
+        const kind=detectKind(text,lines);
+        const found = kind==="busta" ? parsePayslip(lines,payday) : kind==="ricevuta" ? parseReceipt(lines) : parseRows(lines,kind);
         found.forEach(r=>{
           r.id=uid(); r.file=f.name; r.importKey=importKey(r);
           r.dup = existing.keys.has(r.importKey) || existing.loose.has(`${toInputDate(r.date)}|${r.type}|${r.amount.toFixed(2)}`) || all.some(o=>o.importKey===r.importKey);
@@ -1855,7 +2101,7 @@ function ImportModal({onClose,onSaveMany,txs,payday}){
     await onSaveMany(sel.map(r=>({id:uid(),type:r.type,amount:r.amount,category:r.category,date:r.date.toISOString(),note:r.note,source:"pdf",file:r.file,importKey:importKey(r),createdAt:new Date().toISOString()})));
     setBusy(false); onClose();
   };
-  const kindLabel={busta:"💼 busta paga",pedaggi:"🛣️ pedaggi / Telepass",generico:"📄 documento"};
+  const kindLabel={busta:"💼 busta paga",ricevuta:"🧾 ricevuta di pagamento",pedaggi:"🛣️ pedaggi / Telepass",generico:"📄 documento"};
 
   return (
     <div onClick={onClose} className="fade" style={{position:"fixed",inset:0,background:"rgba(5,8,18,.6)",backdropFilter:"blur(6px)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:50}}>
@@ -3436,6 +3682,26 @@ function App(){
   const [refuels]=useCollection(fb, ["refuels"], signedIn);
   const [budgetDoc,budgetLoaded]=useDocument(fb, signedIn?["users",user.uid,"meta","budget"]:null, signedIn);
   const [catsDoc]=useDocument(fb, signedIn?["users",user.uid,"meta","categories"]:null, signedIn);
+  // ── blocco dell'app
+  const [secDoc,secLoaded]=useDocument(fb, signedIn?["users",user.uid,"meta","security"]:null, signedIn);
+  const lockOn=!!(secDoc&&secDoc.enabled);
+  const [unlocked,setUnlocked]=useState(false);
+  useEffect(()=>{
+    if(!lockOn) return;
+    const KEY="galleggiapp_hidden_at";
+    const onVis=()=>{ try{
+      if(document.hidden) localStorage.setItem(KEY,String(Date.now()));
+      else { const t=+localStorage.getItem(KEY)||0; const mins=(secDoc&&secDoc.after!=null)?secDoc.after:1; if(t && Date.now()-t>=mins*60000) setUnlocked(false); }
+    }catch(e){} };
+    document.addEventListener("visibilitychange",onVis);
+    return ()=>document.removeEventListener("visibilitychange",onVis);
+  },[lockOn,secDoc&&secDoc.after]);
+  const forgotLock=async()=>{
+    // nuovo accesso con Google: se va a buon fine il blocco viene disattivato (poi lo puoi reimpostare)
+    try{ const p=new fb.GoogleAuthProvider(); p.setCustomParameters({prompt:"select_account"}); const r=await fb.signInWithPopup(fb.auth,p,fb.resolver);
+      if(r&&r.user&&r.user.uid===user.uid){ setUnlocked(true); await fb.setDoc(fb.doc(fb.db,"users",user.uid,"meta","security"),{salt:secDoc.salt,enabled:false,after:secDoc.after??1}); alert("Blocco disattivato. Puoi impostarne uno nuovo in ⚙️."); }
+    }catch(e){ if(e.code!=="auth/popup-closed-by-user") alert("Accesso non riuscito: "+(e.code||e.message)); }
+  };
   USER_CATS = {out:(catsDoc&&catsDoc.out)||[], in:(catsDoc&&catsDoc.in)||[]};
   const budget = {payday:27, expectedSalary:0, fixed:[], ...(budgetDoc||{})};
   const [cycle,setCycle]=useState(null);
@@ -3528,6 +3794,8 @@ function App(){
   if(!fb) return fbSlow ? <Diagnostic stage="fb"/> : <div style={{minHeight:"100vh",display:"grid",placeItems:"center",color:"var(--text-dim)"}}>Caricamento…</div>;
   if(user===undefined) return authSlow ? <Diagnostic stage="auth"/> : <div style={{minHeight:"100vh",display:"grid",placeItems:"center",color:"var(--text-dim)"}}>Controllo l'accesso…</div>;
   if(!user) return <Login fb={fb}/>;
+  if(!secLoaded) return <div style={{minHeight:"100vh",display:"grid",placeItems:"center",color:"var(--text-dim)"}}>Controllo l'accesso…</div>;
+  if(lockOn && !unlocked) return <LockScreen sec={secDoc} user={user} onUnlock={()=>setUnlocked(true)} onForgot={forgotLock}/>;
   if(!cycle) return <div style={{minHeight:"100vh",display:"grid",placeItems:"center",color:"var(--text-dim)"}}>Carico i tuoi dati…</div>;
 
   const curCycle=cycleOf(now,budget.payday);
@@ -3568,7 +3836,7 @@ function App(){
       {tab==="benz"  && <BenzinSection initialAmount={fuelPrefill} onInitialUsed={()=>setFuelPrefill(null)} cycleFuel={stats.list.filter(t=>t.source==="benzinapp").reduce((a,t)=>a+t.amount,0)} cycleLabelText={cycleLabel(curCycle)}/>}
       {tab==="salva" && <Salvadanaio fb={fb} user={user} onDeliver={saveTx}/>}
       {tab==="stats" && <Stats txs={txs} budget={budget} now={now}/>}
-      {tab==="set"   && <Settings fb={fb} budget={budget} saveBudget={saveBudget} txs={allTxs} autoStart={autoStart} userCats={USER_CATS} saveCats={saveCats} createCat={createCat} user={user} onLogout={()=>fb.signOut(fb.auth)}/>}
+      {tab==="set"   && <Settings fb={fb} sec={secDoc} onBeforeEnableLock={()=>setUnlocked(true)} budget={budget} saveBudget={saveBudget} txs={allTxs} autoStart={autoStart} userCats={USER_CATS} saveCats={saveCats} createCat={createCat} user={user} onLogout={()=>fb.signOut(fb.auth)}/>}
       {tab!=="set" && <GPverseFooter/>}
 
       {tab!=="set" && tab!=="lista" && tab!=="salva" && tab!=="benz" && (

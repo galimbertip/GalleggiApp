@@ -2,6 +2,12 @@
 
 Schema **V.maggiore.minore.patch**: *maggiore* = cambi di struttura, *minore* = nuove funzioni, *patch* = correzioni.
 
+## v2.4.1 — Avvio veloce e Firebase più stabile (2026-11-17)
+- Avvio molto più veloce: il codice arriva già pronto, non viene più tradotto sul telefono a ogni apertura (tolti 2,7 MB da scaricare)
+- Se la memoria locale di Firebase dà un errore interno (bug noto di Firestore), l'app ricarica da sola e per 3 giorni usa la memoria normale
+- Avviso "il servizio di accesso non risponde" solo dopo 15 secondi, con stato della connessione
+- Errore di lettura dei dati con il dettaglio esatto, un suggerimento e il pulsante Ricarica
+
 ## v2.4.0 — Blocco dell'app e ricevute (2026-11-14)
 - 🔒 Blocco dell'app con 4 metodi: PIN, sequenza disegnata, impronta, volto
 - PIN e sequenza uguali su tutti i dispositivi; impronta e volto si attivano su ogni dispositivo che li ha, con PIN di riserva

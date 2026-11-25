@@ -2,14 +2,11 @@
 # "dati-carburanti", che viene sostituito ogni volta (niente storico che si accumula).
 # GalleggiApp li legge da raw.githubusercontent.com per la ricerca "Benzinai vicino a te".
 name: Prezzi carburanti
+# SOSPESO: il sito del Ministero non risponde ai server di GitHub (timeout di connessione,
+# verificato il 25/11/2026). Resta avviabile solo a mano; i dati vengono pubblicati da un
+# computer in Italia con lo stesso script (scripts/carburanti.py).
 on:
-  schedule:
-    - cron: "23 7 * * *"    # 08:23 ora italiana (inverno), dopo la pubblicazione dei prezzi delle 8
-    - cron: "41 11 * * *"   # secondo tentativo a metà giornata
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: ["scripts/carburanti.py", ".github/workflows/carburanti.yml"]
 permissions:
   contents: write
 concurrency:
@@ -36,7 +33,7 @@ jobs:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p err && cp log.txt err/ 2>/dev/null || true
-          { echo "--- $(date -u)"; for u in https://www.mimit.gov.it/ https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv https://carburanti.mise.gov.it/ https://www.gov.it/; do echo "== $u"; curl -sS -o /dev/null -m 20 -w "http=%{http_code} ip=%{remote_ip} t=%{time_total}s\n" "$u" 2>&1; done; } >> err/log.txt
+          { echo "--- $(date -u)"; for u in https://www.mimit.gov.it/ https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv https://carburanti.mise.gov.it/ https://www.gov.it/; do echo "== $u"; curl -sS -o /dev/null -m 20 -w "http=%{http_code} ip=%{remote_ip} t=%{time_total}s\n" "$u" 2>&1 || true; done; } >> err/log.txt
           cd err && git init -q -b dati-carburanti-errore
           git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A && git commit -q -m "Errore $(date -u +%Y-%m-%dT%H:%MZ)"

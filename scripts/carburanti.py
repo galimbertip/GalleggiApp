@@ -13,19 +13,46 @@ URL_PREZZI = "https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv"
 OUT = sys.argv[1] if len(sys.argv) > 1 else "out"
 TILE = 0.5   # gradi per zona
 
-def download(url, tries=4):
-    last = None
-    for i in range(tries):
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (GalleggiApp; open data carburanti)"})
-            with urllib.request.urlopen(req, timeout=120) as r:
-                raw = r.read()
-            for enc in ("utf-8-sig", "cp1252", "latin-1"):
-                try: return raw.decode(enc)
-                except UnicodeDecodeError: pass
-        except Exception as e:
-            last = e; time.sleep(10 * (i + 1))
-    raise RuntimeError(f"download fallito {url}: {last}")
+URL_ALT = ["https://www.mimit.gov.it", "https://mimit.gov.it", "https://www.mise.gov.it"]
+
+def _decode(raw):
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try: return raw.decode(enc)
+        except UnicodeDecodeError: pass
+
+def download(url, tries=3):
+    """Prova urllib e curl, su più indirizzi del Ministero; registra ogni tentativo."""
+    import subprocess
+    path = url.split(".gov.it", 1)[1]
+    errors = []
+    for base in URL_ALT:
+        u = base + path
+        for i in range(tries):
+            t0 = time.time()
+            try:
+                req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+                                                         "Accept": "text/csv,*/*"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    raw = r.read()
+                if len(raw) < 10000: raise RuntimeError(f"file troppo piccolo ({len(raw)} byte): {raw[:200]!r}")
+                print(f"OK urllib {u} {len(raw)} byte in {time.time()-t0:.0f}s", flush=True)
+                return _decode(raw)
+            except Exception as e:
+                errors.append(f"urllib {u} #{i+1}: {type(e).__name__}: {e} ({time.time()-t0:.0f}s)")
+                print(errors[-1], flush=True)
+            t0 = time.time()
+            try:
+                out = subprocess.run(["curl", "-sSL", "--http1.1", "--max-time", "90", "-A", "Mozilla/5.0", "-o", "-", u],
+                                     capture_output=True, timeout=120)
+                if out.returncode == 0 and len(out.stdout) > 10000:
+                    print(f"OK curl {u} {len(out.stdout)} byte in {time.time()-t0:.0f}s", flush=True)
+                    return _decode(out.stdout)
+                errors.append(f"curl {u} #{i+1}: rc={out.returncode} {out.stderr.decode(errors='ignore')[:200]} len={len(out.stdout)} ({time.time()-t0:.0f}s)")
+            except Exception as e:
+                errors.append(f"curl {u} #{i+1}: {e}")
+            print(errors[-1], flush=True)
+            time.sleep(5)
+    raise RuntimeError("download fallito:\n" + "\n".join(errors))
 
 def table(text):
     """Trova la riga di intestazione (quella con 'idImpianto'), il separatore, e restituisce (intestazione, righe, nota)."""

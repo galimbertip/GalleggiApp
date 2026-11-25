@@ -25,7 +25,22 @@ jobs:
         with:
           python-version: "3.12"
       - name: Scarica e prepara i dati
-        run: python scripts/carburanti.py out
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/carburanti.py out 2>&1 | tee log.txt
+      - name: In caso di errore salva il registro nel ramo dati-carburanti-errore
+        if: failure()
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p err && cp log.txt err/ 2>/dev/null || true
+          { echo "--- $(date -u)"; curl -sSIL -m 30 https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv 2>&1 | head -40; } >> err/log.txt
+          cd err && git init -q -b dati-carburanti-errore
+          git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A && git commit -q -m "Errore $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -f "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:dati-carburanti-errore
       - name: Pubblica nel ramo dati-carburanti
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}

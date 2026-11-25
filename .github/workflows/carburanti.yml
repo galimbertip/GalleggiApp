@@ -1,0 +1,39 @@
+# Ogni mattina scarica i prezzi ufficiali dei carburanti (MIMIT) e li pubblica nel ramo
+# "dati-carburanti", che viene sostituito ogni volta (niente storico che si accumula).
+# GalleggiApp li legge da raw.githubusercontent.com per la ricerca "Benzinai vicino a te".
+name: Prezzi carburanti
+on:
+  schedule:
+    - cron: "23 7 * * *"    # 08:23 ora italiana (inverno), dopo la pubblicazione dei prezzi delle 8
+    - cron: "41 11 * * *"   # secondo tentativo a metà giornata
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["scripts/carburanti.py", ".github/workflows/carburanti.yml"]
+permissions:
+  contents: write
+concurrency:
+  group: carburanti
+  cancel-in-progress: false
+jobs:
+  aggiorna:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Scarica e prepara i dati
+        run: python scripts/carburanti.py out
+      - name: Pubblica nel ramo dati-carburanti
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd out
+          git init -q -b dati-carburanti
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Prezzi carburanti $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -f "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:dati-carburanti

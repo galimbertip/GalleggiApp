@@ -1,12 +1,12 @@
 <!DOCTYPE html>
-<!-- GalleggiApp v2.4.1 · un progetto GPverse · cronologia completa in CHANGELOG (in fondo al codice e nella schermata Novità) -->
+<!-- GalleggiApp v2.5.0 · un progetto GPverse · cronologia completa in CHANGELOG (in fondo al codice e nella schermata Novità) -->
 <html lang="it">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>GalleggiApp</title>
   <meta name="theme-color" content="#0b1120">
-  <meta name="version" content="2.4.1">
+  <meta name="version" content="2.5.0">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="GalleggiApp">
@@ -103,8 +103,9 @@ const { useState, useEffect, useMemo } = React;
 
 // ─── Versione ─────────────────────────────────────────────────────────────
 // Schema V.maggiore.minore.patch — maggiore: cambi di struttura · minore: nuove funzioni · patch: correzioni
-const APP_VERSION = "2.4.1";
+const APP_VERSION = "2.5.0";
 const CHANGELOG = [
+ {"v": "2.5.0", "date": "2026-11-25", "title": "Benzinai vicino a te che funziona", "items": ["Ricerca benzinai rifatta: non usa più proxy gratuiti (chiusi o a pagamento, per questo falliva sempre)", "Prezzi ufficiali MIMIT scaricati ogni mattina da GitHub e divisi per zona: l'app scarica solo la tua", "Per Benzina, Diesel, GPL e Metano vedi subito il distributore più vicino e il più economico", "Elenco ordinabile per distanza o prezzo, prezzo self o servito, pulsante 🧭 Vai per la navigazione", "Quanto risparmi su un pieno andando al più economico invece che al più vicino", "Avviso se il prezzo di un distributore non viene aggiornato da più di 3 giorni"]},
  {"v": "2.4.1", "date": "2026-11-17", "title": "Avvio veloce e Firebase più stabile", "items": ["Avvio molto più veloce: il codice arriva già pronto, non viene più tradotto sul telefono a ogni apertura (tolti 2,7 MB da scaricare)", "Se la memoria locale di Firebase dà un errore interno (bug noto di Firestore), l'app ricarica da sola e per 3 giorni usa la memoria normale", "Avviso \"il servizio di accesso non risponde\" solo dopo 15 secondi, con stato della connessione", "Errore di lettura dei dati con il dettaglio esatto, un suggerimento e il pulsante Ricarica"]},
  {"v": "2.4.0", "date": "2026-11-14", "title": "Blocco dell'app e ricevute", "items": ["🔒 Blocco dell'app con 4 metodi: PIN, sequenza disegnata, impronta, volto", "PIN e sequenza uguali su tutti i dispositivi; impronta e volto si attivano su ogni dispositivo che li ha, con PIN di riserva", "Blocco all'apertura e quando torni dopo 1, 5 o 15 minuti (o subito); 5 errori = attesa di 30 secondi", "\"Ho dimenticato il codice\": nuovo accesso con Google e blocco disattivato", "Import PDF: riconosce le ricevute di un singolo pagamento (PagoPA, app Telepass, bollettini, fatture) — totale, data anche nel formato \"01 06 2025\", causale e categoria"]},
  {"v": "2.3.0", "date": "2026-11-14", "title": "Scadenze, ricerca e backup", "items": ["🔎 Ricerca nei movimenti su tutti i mesi: descrizione, categoria, trasferta o importo, con totale dei risultati", "📅 Scadenze in arrivo: le spese fisse dei prossimi 5 giorni in evidenza nel Bilancio (anche quelle scadute)", "🔁 Riconosce le spese che si ripetono ogni mese (abbonamenti, bollette) e propone di aggiungerle alle fisse", "Corretto: una spesa fissa inserita come spesa normale (a mano, da notifica o PDF) non viene più contata due volte", "💾 Backup completo in un file (movimenti, bilancio, categorie, lista, Salvadanaio, Benzina) e ripristino senza cancellare niente"]},
@@ -2688,107 +2689,141 @@ const INP_SM={...INP,fontSize:13,padding:"9px 12px",borderRadius:10};
 
 function GPverseFooter(){ return null; }
 
-// ─── NearbyStationsModal (benzinai vicini + prezzo più basso) ──────────────────
-// Usa la posizione GPS del dispositivo + l'Osservatorio Prezzi Carburanti del
-// Ministero (MIMIT, dati pubblici senza chiave). L'API non espone CORS per
-// chiamate da altri domini: si prova la chiamata diretta e poi una cascata di
-// proxy CORS pubblici gratuiti (vedi CORS_PROXIES) finché uno risponde — nessun
-// singolo proxy gratuito è garantito al 100%, da qui il tentativo multiplo.
+// ─── NearbyStationsModal (benzinai vicini: il più vicino e il più economico per carburante) ─
+// Fonte principale: i dati ufficiali MIMIT (open data, prezzi delle 8) che una GitHub Action
+// scarica ogni mattina e divide in zone nel ramo "dati-carburanti" del repo GalleggiApp.
+// raw.githubusercontent.com consente le chiamate dal browser, quindi niente proxy di terzi.
+// Riserva: l'API del sito del Ministero tramite i vecchi proxy (di solito bloccata dal CORS).
+const CARB_DATA = "https://raw.githubusercontent.com/galimbertip/GalleggiApp/dati-carburanti/";
+const CARB_TILE = 0.5;
+const CARB_FUELS = [{k:"B",label:"Benzina",icon:"⛽"},{k:"D",label:"Diesel",icon:"🛢️"},{k:"G",label:"GPL",icon:"🔵"},{k:"M",label:"Metano",icon:"🟢"}];
+const VEH_TO_CARB = {Benzina:"B",Ibrido:"B",Elettrico:"B",Diesel:"D",GPL:"G",Metano:"M"};
+async function fetchJSON(url,ms=12000){ const c=new AbortController(); const t=setTimeout(()=>c.abort(),ms);
+  try{ const r=await fetch(url,{signal:c.signal,cache:"no-cache"}); if(r.status===404) return null; if(!r.ok) throw new Error("HTTP "+r.status); return await r.json(); } finally{ clearTimeout(t); } }
+// carica le zone che coprono un cerchio di raggio "km" intorno alla posizione
+async function loadStations(lat,lng,km){
+  const dLat=km/111, dLng=km/(111*Math.cos(lat*Math.PI/180));
+  const keys=[]; for(let a=Math.floor((lat-dLat)/CARB_TILE); a<=Math.floor((lat+dLat)/CARB_TILE); a++) for(let b=Math.floor((lng-dLng)/CARB_TILE); b<=Math.floor((lng+dLng)/CARB_TILE); b++) keys.push(`${a}_${b}`);
+  const [meta,...tiles]=await Promise.all([fetchJSON(CARB_DATA+"meta.json").catch(()=>null), ...keys.map(k=>fetchJSON(CARB_DATA+"z/"+k+".json"))]);
+  if(!meta && tiles.every(t=>!t)) throw new Error("dati non ancora pubblicati");
+  const list=[]; tiles.forEach(t=>(t||[]).forEach(s=>{ const d=distKm(lat,lng,s[5],s[6]); if(d!=null&&d<=km) list.push({id:s[0],name:s[1],brand:s[2],address:s[3],town:s[4],lat:s[5],lng:s[6],prices:s[7],date:s[8],dist:d}); }));
+  return {list,meta};
+}
+// riserva: API del sito MIMIT (una chiamata per carburante) tramite i vecchi proxy
+async function loadStationsMise(lat,lng,km){
+  const codes={B:"1",D:"2",G:"4",M:"3"}; const all={};
+  for(const [k,code] of Object.entries(codes)){
+    const body=JSON.stringify({points:[{lat,lng}],radius:km,fuelType:`${code}-x`,priceOrder:"asc"});
+    let data=null;
+    for(const wrap of CORS_PROXIES){ const c=new AbortController(); const t=setTimeout(()=>c.abort(),7000);
+      try{ const r=await fetch(wrap(MISE_API),{method:"POST",headers:{"Content-Type":"application/json"},body,signal:c.signal}); if(r.ok){ const j=await r.json(); if(j&&Array.isArray(j.results)){ data=j; break; } } }catch(e){} finally{ clearTimeout(t); } }
+    if(!data) throw new Error("servizio del Ministero non raggiungibile");
+    data.results.forEach(s=>{ const f=(s.fuels||[]).filter(f=>String(f.fuelId)===code); if(!f.length) return;
+      const o=all[s.id]||(all[s.id]={id:s.id,name:s.name,brand:s.brand,address:s.address,town:"",lat:s.location&&s.location.lat,lng:s.location&&s.location.lng,prices:{},date:""});
+      o.prices[k]=[Math.min(...f.filter(x=>x.isSelf).map(x=>x.price),Infinity),Math.min(...f.filter(x=>!x.isSelf).map(x=>x.price),Infinity)].map(v=>v===Infinity?null:v);
+      o.dist=distKm(lat,lng,o.lat,o.lng); });
+  }
+  return {list:Object.values(all),meta:{estrazione:"dal sito del Ministero"}};
+}
+const fmtPrice = v => v==null ? "—" : "€ "+v.toFixed(3).replace(".",",");
+const fmtKm = d => d<1 ? `${Math.round(d*1000)} m` : `${d.toFixed(1).replace(".",",")} km`;
+const navUrl = s => `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`;
+
 function NearbyStationsModal({defaultFuel, onClose}){
   const [status,setStatus]=useState("locating"); // locating | loading | done | error
   const [errMsg,setErrMsg]=useState("");
-  const [stations,setStations]=useState([]);
+  const [data,setData]=useState({list:[],meta:null});
   const [coords,setCoords]=useState(null);
-  const [fuel,setFuel]=useState(MISE_FUEL_CODE[defaultFuel]?defaultFuel:"Benzina");
-  const [radius,setRadius]=useState(5);
+  const [fuel,setFuel]=useState(VEH_TO_CARB[defaultFuel]||"B");
+  const [radius,setRadius]=useState(10);
+  const [sort,setSort]=useState("dist");      // dist | price
+  const [mode,setMode]=useState("self");      // self | serv
+  const [source,setSource]=useState("");
 
-  const runSearch=async(lat,lng,fuelLabel,rad)=>{
+  const run=async(c,km)=>{
     setStatus("loading"); setErrMsg("");
-    const fuelCode=MISE_FUEL_CODE[fuelLabel]||"1";
-    const body=JSON.stringify({points:[{lat,lng}],radius:rad,fuelType:`${fuelCode}-x`,priceOrder:"asc"});
-    const doFetch=async url=>{
-      const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),8000);
-      try{
-        const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body,signal:ctrl.signal});
-        if(!r.ok) throw new Error("HTTP "+r.status);
-        const j=await r.json();
-        if(!j||!Array.isArray(j.results)) throw new Error("risposta inattesa");
-        return j;
-      } finally { clearTimeout(t); }
-    };
-    let data=null, lastErr=null;
-    for(const wrap of CORS_PROXIES){
-      try{ data=await doFetch(wrap(MISE_API)); break; }
-      catch(e){ lastErr=e; }
-    }
-    try{
-      if(!data) throw lastErr||new Error("nessun proxy disponibile");
-      const list=(data.results||[]).map(s=>{
-        const match=(s.fuels||[]).find(f=>String(f.fuelId)===fuelCode);
-        if(!match) return null;
-        const sLat=s.location&&s.location.lat, sLng=s.location&&s.location.lng;
-        return {id:s.id, name:s.name, brand:s.brand, address:s.address, price:match.price, isSelf:match.isSelf, dist:distKm(lat,lng,sLat,sLng), lat:sLat, lng:sLng};
-      }).filter(Boolean).sort((a,b)=>a.price-b.price);
-      setStations(list); setStatus("done");
-    }catch(e){
-      setStatus("error");
-      setErrMsg("Non riesco a contattare il servizio prezzi carburanti del Ministero. Riprova più tardi.");
+    try{ const d=await loadStations(c.lat,c.lng,km); setData(d); setSource("open"); setStatus("done"); }
+    catch(e1){
+      try{ const d=await loadStationsMise(c.lat,c.lng,km); setData(d); setSource("mise"); setStatus("done"); }
+      catch(e2){ setStatus("error"); setErrMsg(/non ancora pubblicati/.test(e1.message)?"I prezzi ufficiali non sono ancora stati scaricati: la prima volta servono qualche minuto dopo l'aggiornamento dell'app. Riprova tra poco.":"Non riesco a scaricare i prezzi: controlla la connessione e riprova."); }
     }
   };
-
   const locate=()=>{
     setStatus("locating"); setErrMsg("");
     if(!navigator.geolocation){ setStatus("error"); setErrMsg("Questo dispositivo non supporta la geolocalizzazione."); return; }
     navigator.geolocation.getCurrentPosition(
-      pos=>{ const c={lat:pos.coords.latitude,lng:pos.coords.longitude}; setCoords(c); runSearch(c.lat,c.lng,fuel,radius); },
-      err=>{ setStatus("error"); setErrMsg(err.code===1?"Permesso di localizzazione negato — abilitalo per usare questa funzione.":"Impossibile rilevare la posizione attuale."); },
-      {enableHighAccuracy:true,timeout:12000,maximumAge:60000}
+      pos=>{ const c={lat:pos.coords.latitude,lng:pos.coords.longitude,acc:pos.coords.accuracy}; setCoords(c); run(c,radius); },
+      err=>{ setStatus("error"); setErrMsg(err.code===1?"Permesso di localizzazione negato: abilitalo per il sito nelle impostazioni del browser.":"Impossibile rilevare la posizione. Sei all'aperto o con il GPS attivo?"); },
+      {enableHighAccuracy:true,timeout:15000,maximumAge:60000}
     );
   };
-
   useEffect(()=>{ locate(); /* eslint-disable-next-line */ },[]);
+  const changeRadius=r=>{ setRadius(r); if(coords) run(coords,r); };
 
-  const changeFuel=f=>{ setFuel(f); if(coords) runSearch(coords.lat,coords.lng,f,radius); };
-  const changeRadius=r=>{ setRadius(r); if(coords) runSearch(coords.lat,coords.lng,fuel,r); };
+  // prezzo da mostrare: self o servito (se manca quello scelto, uso l'altro e lo segnalo)
+  const priceOf=(s,k)=>{ const p=s.prices&&s.prices[k]; if(!p) return null; const i=mode==="self"?0:1; return p[i]!=null?{v:p[i],alt:false}:(p[1-i]!=null?{v:p[1-i],alt:true}:null); };
+  const withFuel=k=>data.list.filter(s=>priceOf(s,k));
+  const summary=CARB_FUELS.map(f=>{ const l=withFuel(f.k); if(!l.length) return {...f,n:0};
+    const near=l.reduce((a,b)=>a.dist<=b.dist?a:b); const cheap=l.reduce((a,b)=>{const pa=priceOf(a,f.k).v,pb=priceOf(b,f.k).v; return pa<pb||(pa===pb&&a.dist<b.dist)?a:b;});
+    return {...f,n:l.length,near,cheap}; });
+  const list=withFuel(fuel).sort((a,b)=>sort==="dist"?a.dist-b.dist:(priceOf(a,fuel).v-priceOf(b,fuel).v)||a.dist-b.dist);
+  const S=summary.find(x=>x.k===fuel)||{};
+  const today=new Date().toISOString().slice(0,10);
+  const chip=(on)=>({background:on?"var(--blue)":"var(--surface-2)",color:"#fff",border:on?"none":"1px solid var(--border)",borderRadius:20,padding:"6px 12px",cursor:"pointer",fontSize:12,fontWeight:on?700:500});
 
   return(
     <Modal title="📍 Benzinai vicino a te" onClose={onClose}>
-      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
-        {FUEL_TYPES.filter(f=>MISE_FUEL_CODE[f]).map(f=>
-          <button key={f} onClick={()=>changeFuel(f)} style={{background:fuel===f?"var(--blue)":"var(--surface-2)",color:"#fff",border:"none",borderRadius:20,padding:"5px 12px",cursor:"pointer",fontSize:12,fontWeight:fuel===f?700:400}}>{f}</button>
-        )}
-      </div>
-      <div style={{display:"flex",gap:6,marginBottom:14}}>
-        {[5,10,20].map(r=>
-          <button key={r} onClick={()=>changeRadius(r)} style={{background:radius===r?"var(--amber)":"var(--surface-2)",color:radius===r?"#000":"#e2e8f0",border:"none",borderRadius:20,padding:"5px 14px",cursor:"pointer",fontSize:12,fontWeight:700}}>{r} km</button>
-        )}
-      </div>
-
-      {status==="locating"&&<div style={{textAlign:"center",color:"var(--text-faint)",padding:30}}><div style={{fontSize:36}}>📡</div><div style={{marginTop:10,fontSize:13}}>Rilevo la tua posizione...</div></div>}
-      {status==="loading"&&<div style={{textAlign:"center",color:"var(--text-faint)",padding:30}}><div style={{fontSize:36}}>⛽</div><div style={{marginTop:10,fontSize:13}}>Cerco i benzinai vicini...</div></div>}
+      {status==="locating"&&<div style={{textAlign:"center",color:"var(--text-faint)",padding:30}}><div style={{fontSize:36}}>📡</div><div style={{marginTop:10,fontSize:13}}>Cerco la tua posizione…</div></div>}
+      {status==="loading"&&<div style={{textAlign:"center",color:"var(--text-faint)",padding:30}}><div style={{fontSize:36}}>⛽</div><div style={{marginTop:10,fontSize:13}}>Carico i prezzi della tua zona…</div></div>}
       {status==="error"&&<div style={{textAlign:"center",color:"var(--text-faint)",padding:20}}>
         <div style={{fontSize:36}}>⚠️</div>
-        <div style={{marginTop:10,fontSize:13,color:"#fca5a5"}}>{errMsg}</div>
-        <button onClick={locate} style={{marginTop:14,background:"var(--border)",color:"#e2e8f0",border:"none",borderRadius:8,padding:"9px 16px",cursor:"pointer",fontSize:13,fontWeight:600}}>🔄 Riprova</button>
+        <div style={{marginTop:10,fontSize:13,color:"#fca5a5",lineHeight:1.45}}>{errMsg}</div>
+        <button onClick={locate} style={{marginTop:14,background:"var(--border)",color:"#e2e8f0",border:"none",borderRadius:8,padding:"9px 16px",cursor:"pointer",fontWeight:600}}>🔄 Riprova</button>
       </div>}
       {status==="done"&&<>
-        {!stations.length&&<div style={{textAlign:"center",color:"var(--text-faint)",padding:20,fontSize:13}}>Nessun benzinaio trovato entro {radius} km con dati di prezzo per {fuel}.</div>}
-        {stations.map((s,i)=>(
-          <div key={s.id} style={{background:i===0?"rgba(52,211,153,.10)":"var(--surface-2)",border:i===0?"1px solid var(--green)":"1px solid var(--border)",borderRadius:12,padding:"12px 14px",marginBottom:8}}>
+        {/* riepilogo per carburante: il più vicino e il più economico */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+          {summary.map(f=>(
+            <button key={f.k} onClick={()=>setFuel(f.k)} style={{textAlign:"left",background:fuel===f.k?"rgba(59,110,240,.18)":"var(--surface-2)",border:"1px solid "+(fuel===f.k?"var(--blue)":"var(--border)"),borderRadius:12,padding:"9px 10px",color:"var(--text)",cursor:"pointer",minWidth:0}}>
+              <div style={{fontWeight:800,fontSize:13}}>{f.icon} {f.label}</div>
+              {f.n? <>
+                <div style={{fontSize:11,color:"var(--text-dim)",marginTop:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>📍 {fmtKm(f.near.dist)} · <b style={{color:"var(--text)"}}>{fmtPrice(priceOf(f.near,f.k).v)}</b></div>
+                <div style={{fontSize:11,color:"var(--text-dim)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>🏆 <b style={{color:"var(--green)"}}>{fmtPrice(priceOf(f.cheap,f.k).v)}</b> · {fmtKm(f.cheap.dist)}</div>
+              </> : <div style={{fontSize:11,color:"var(--text-faint)",marginTop:4}}>nessuno entro {radius} km</div>}
+            </button>
+          ))}
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8,alignItems:"center"}}>
+          {[5,10,20].map(r=><button key={r} onClick={()=>changeRadius(r)} style={{...chip(radius===r),background:radius===r?"var(--amber)":"var(--surface-2)",color:radius===r?"#000":"#e2e8f0"}}>{r} km</button>)}
+          <span style={{flex:1}}/>
+          <button onClick={()=>setMode(mode==="self"?"serv":"self")} style={chip(false)}>{mode==="self"?"🙋 Self":"🧑‍🔧 Servito"}</button>
+        </div>
+        <div style={{display:"flex",gap:6,marginBottom:12}}>
+          <button onClick={()=>setSort("dist")} style={chip(sort==="dist")}>📍 Più vicini</button>
+          <button onClick={()=>setSort("price")} style={chip(sort==="price")}>💶 Più economici</button>
+        </div>
+        {S.n>0 && S.cheap && S.near && S.cheap.id!==S.near.id && (()=>{ const diff=priceOf(S.near,fuel).v-priceOf(S.cheap,fuel).v; return diff>0.005 &&
+          <div style={{fontSize:12,color:"var(--text-dim)",background:"var(--surface-2)",borderRadius:10,padding:"8px 10px",marginBottom:10,lineHeight:1.4}}>💡 Il più economico costa <b>{diff.toFixed(3).replace(".",",")} €/l</b> in meno del più vicino: su un pieno da 40 litri risparmi circa <b>{(diff*40).toFixed(2).replace(".",",")} €</b>, ma è {fmtKm(S.cheap.dist)} invece di {fmtKm(S.near.dist)}.</div>; })()}
+        {!list.length&&<div style={{textAlign:"center",color:"var(--text-faint)",padding:20,fontSize:13}}>Nessun distributore con {CARB_FUELS.find(f=>f.k===fuel).label} entro {radius} km. Prova ad allargare il raggio.</div>}
+        {list.slice(0,40).map(s=>{ const p=priceOf(s,fuel); const isNear=S.near&&s.id===S.near.id, isCheap=S.cheap&&s.id===S.cheap.id; const old=s.date&&s.date<new Date(Date.now()-3*86400000).toISOString().slice(0,10);
+          return (
+          <div key={s.id} style={{background:isCheap?"rgba(52,211,153,.10)":"var(--surface-2)",border:"1px solid "+(isCheap?"var(--green)":isNear?"var(--blue)":"var(--border)"),borderRadius:12,padding:"10px 12px",marginBottom:8}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
               <div style={{minWidth:0}}>
-                <div style={{fontWeight:700,fontSize:14}}>{i===0?"🏆 ":""}{s.brand||s.name}</div>
-                <div style={{fontSize:11,color:"var(--text-dim)",marginTop:2}}>{s.address}</div>
-                <div style={{fontSize:11,color:"var(--text-faint)",marginTop:2}}>{s.dist!=null?`📍 ${s.dist.toFixed(1)} km`:""}{s.isSelf!=null?` · ${s.isSelf?"self":"servito"}`:""}</div>
+                <div style={{fontWeight:700,fontSize:14}}>{isCheap?"🏆 ":isNear?"📍 ":""}{s.brand&&s.brand!=="Pompe Bianche"?s.brand:s.name}</div>
+                <div style={{fontSize:11,color:"var(--text-dim)",marginTop:2}}>{s.address}{s.town?` · ${s.town}`:""}</div>
+                <div style={{fontSize:11,color:"var(--text-faint)",marginTop:2}}>{fmtKm(s.dist)}{p.alt?` · solo ${mode==="self"?"servito":"self"}`:""}{old?` · ⚠️ prezzo del ${new Date(s.date).toLocaleDateString("it-IT")}`:""}</div>
               </div>
               <div style={{textAlign:"right",flexShrink:0}}>
-                <div style={{fontWeight:800,fontSize:16,color:i===0?"var(--green)":"var(--amber)"}}>€ {s.price.toFixed(3)}</div>
-                {s.lat!=null&&<a href={`https://www.google.com/maps/search/?api=1&query=${s.lat},${s.lng}`} target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--blue)",textDecoration:"none"}}>🗺️ Mappa</a>}
+                <div style={{fontWeight:800,fontSize:16,color:isCheap?"var(--green)":"var(--amber)"}}>{fmtPrice(p.v)}</div>
+                {s.lat!=null&&<a href={navUrl(s)} target="_blank" rel="noopener noreferrer" style={{display:"inline-block",marginTop:6,fontSize:12,fontWeight:700,color:"#fff",background:"var(--blue)",borderRadius:8,padding:"5px 10px",textDecoration:"none"}}>🧭 Vai</a>}
               </div>
             </div>
-          </div>
-        ))}
-        <div style={{fontSize:10,color:"var(--text-faint)",textAlign:"center",marginTop:8}}>Dati: Osservatorio Prezzi Carburanti, Ministero delle Imprese e del Made in Italy</div>
+          </div>); })}
+        <div style={{fontSize:10,color:"var(--text-faint)",textAlign:"center",marginTop:8,lineHeight:1.5}}>
+          {source==="open"?<>Prezzi ufficiali MIMIT – Osservatorio prezzi carburanti{data.meta&&data.meta.estrazione?` · ${data.meta.estrazione.toLowerCase()}`:""} (prezzi comunicati entro le 8)</>:"Prezzi dal sito del Ministero delle Imprese e del Made in Italy"}
+          {coords&&coords.acc>500?<><br/>Posizione approssimativa (±{Math.round(coords.acc)} m)</>:null}
+        </div>
       </>}
     </Modal>
   );
@@ -3522,8 +3557,8 @@ function BenzinSection({initialAmount,onInitialUsed,cycleFuel,cycleLabelText}){
         <button onClick={()=>setShowNearby(true)} style={{width:"100%",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"var(--radius-md)",padding:"13px 16px",marginBottom:16,cursor:"pointer",display:"flex",alignItems:"center",gap:10,color:"#e2e8f0"}}>
           <span style={{fontSize:20}}>📍</span>
           <span style={{textAlign:"left",flex:1}}>
-            <span style={{display:"block",fontSize:13,fontWeight:700}}>Benzinaio più economico vicino a te</span>
-            <span style={{display:"block",fontSize:11,color:"var(--text-faint)",marginTop:1}}>Usa la posizione GPS e l'Osservatorio Prezzi Carburanti</span>
+            <span style={{display:"block",fontSize:13,fontWeight:700}}>Benzinai vicino a te</span>
+            <span style={{display:"block",fontSize:11,color:"var(--text-faint)",marginTop:1}}>Il più vicino e il più economico per Benzina, Diesel, GPL e Metano · prezzi ufficiali</span>
           </span>
           <span style={{fontSize:14,color:"var(--text-faint)"}}>›</span>
         </button>

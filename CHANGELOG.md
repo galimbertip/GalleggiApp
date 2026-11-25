@@ -2,6 +2,14 @@
 
 Schema **V.maggiore.minore.patch**: *maggiore* = cambi di struttura, *minore* = nuove funzioni, *patch* = correzioni.
 
+## v2.5.0 — Benzinai vicino a te che funziona (2026-11-25)
+- Ricerca benzinai rifatta: non usa più proxy gratuiti (chiusi o a pagamento, per questo falliva sempre)
+- Prezzi ufficiali MIMIT scaricati ogni mattina da GitHub e divisi per zona: l'app scarica solo la tua
+- Per Benzina, Diesel, GPL e Metano vedi subito il distributore più vicino e il più economico
+- Elenco ordinabile per distanza o prezzo, prezzo self o servito, pulsante 🧭 Vai per la navigazione
+- Quanto risparmi su un pieno andando al più economico invece che al più vicino
+- Avviso se il prezzo di un distributore non viene aggiornato da più di 3 giorni
+
 ## v2.4.1 — Avvio veloce e Firebase più stabile (2026-11-17)
 - Avvio molto più veloce: il codice arriva già pronto, non viene più tradotto sul telefono a ogni apertura (tolti 2,7 MB da scaricare)
 - Se la memoria locale di Firebase dà un errore interno (bug noto di Firestore), l'app ricarica da sola e per 3 giorni usa la memoria normale

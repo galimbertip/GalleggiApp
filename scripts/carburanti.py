@@ -20,7 +20,7 @@ def _decode(raw):
         try: return raw.decode(enc)
         except UnicodeDecodeError: pass
 
-def download(url, tries=3):
+def download(url, tries=1):
     """Prova urllib e curl, su più indirizzi del Ministero; registra ogni tentativo."""
     import subprocess
     path = url.split(".gov.it", 1)[1]
@@ -32,7 +32,7 @@ def download(url, tries=3):
             try:
                 req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
                                                          "Accept": "text/csv,*/*"})
-                with urllib.request.urlopen(req, timeout=60) as r:
+                with urllib.request.urlopen(req, timeout=25) as r:
                     raw = r.read()
                 if len(raw) < 10000: raise RuntimeError(f"file troppo piccolo ({len(raw)} byte): {raw[:200]!r}")
                 print(f"OK urllib {u} {len(raw)} byte in {time.time()-t0:.0f}s", flush=True)
@@ -42,8 +42,8 @@ def download(url, tries=3):
                 print(errors[-1], flush=True)
             t0 = time.time()
             try:
-                out = subprocess.run(["curl", "-sSL", "--http1.1", "--max-time", "90", "-A", "Mozilla/5.0", "-o", "-", u],
-                                     capture_output=True, timeout=120)
+                out = subprocess.run(["curl", "-sSL", "--http1.1", "--connect-timeout", "15", "--max-time", "60", "-A", "Mozilla/5.0", "-o", "-", u],
+                                     capture_output=True, timeout=75)
                 if out.returncode == 0 and len(out.stdout) > 10000:
                     print(f"OK curl {u} {len(out.stdout)} byte in {time.time()-t0:.0f}s", flush=True)
                     return _decode(out.stdout)
@@ -51,7 +51,7 @@ def download(url, tries=3):
             except Exception as e:
                 errors.append(f"curl {u} #{i+1}: {e}")
             print(errors[-1], flush=True)
-            time.sleep(5)
+            time.sleep(2)
     raise RuntimeError("download fallito:\n" + "\n".join(errors))
 
 def table(text):

@@ -18,7 +18,7 @@ concurrency:
 jobs:
   aggiorna:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,7 +36,7 @@ jobs:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p err && cp log.txt err/ 2>/dev/null || true
-          { echo "--- $(date -u)"; curl -sSIL -m 30 https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv 2>&1 | head -40; } >> err/log.txt
+          { echo "--- $(date -u)"; for u in https://www.mimit.gov.it/ https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv https://carburanti.mise.gov.it/ https://www.gov.it/; do echo "== $u"; curl -sS -o /dev/null -m 20 -w "http=%{http_code} ip=%{remote_ip} t=%{time_total}s\n" "$u" 2>&1; done; } >> err/log.txt
           cd err && git init -q -b dati-carburanti-errore
           git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A && git commit -q -m "Errore $(date -u +%Y-%m-%dT%H:%MZ)"

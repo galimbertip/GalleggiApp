@@ -1,12 +1,12 @@
 <!DOCTYPE html>
-<!-- GalleggiApp v2.5.0 · un progetto GPverse · cronologia completa in CHANGELOG (in fondo al codice e nella schermata Novità) -->
+<!-- GalleggiApp v2.5.1 · un progetto GPverse · cronologia completa in CHANGELOG (in fondo al codice e nella schermata Novità) -->
 <html lang="it">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>GalleggiApp</title>
   <meta name="theme-color" content="#0b1120">
-  <meta name="version" content="2.5.0">
+  <meta name="version" content="2.5.1">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="GalleggiApp">
@@ -103,8 +103,9 @@ const { useState, useEffect, useMemo } = React;
 
 // ─── Versione ─────────────────────────────────────────────────────────────
 // Schema V.maggiore.minore.patch — maggiore: cambi di struttura · minore: nuove funzioni · patch: correzioni
-const APP_VERSION = "2.5.0";
+const APP_VERSION = "2.5.1";
 const CHANGELOG = [
+ {"v": "2.5.1", "date": "2026-11-25", "title": "Prezzi carburanti dal PC di casa", "items": ["Il sito del Ministero blocca i server di GitHub (verificato): i prezzi ufficiali li pubblica ogni mattina il PC di casa con un timer automatico", "Se i prezzi non sono disponibili, pulsante \"🏛️ Apri Osservaprezzi\" per il sito ufficiale", "Avviso se i dati hanno più di 2 giorni"]},
  {"v": "2.5.0", "date": "2026-11-25", "title": "Benzinai vicino a te che funziona", "items": ["Ricerca benzinai rifatta: non usa più proxy gratuiti (chiusi o a pagamento, per questo falliva sempre)", "Prezzi ufficiali MIMIT scaricati ogni mattina da GitHub e divisi per zona: l'app scarica solo la tua", "Per Benzina, Diesel, GPL e Metano vedi subito il distributore più vicino e il più economico", "Elenco ordinabile per distanza o prezzo, prezzo self o servito, pulsante 🧭 Vai per la navigazione", "Quanto risparmi su un pieno andando al più economico invece che al più vicino", "Avviso se il prezzo di un distributore non viene aggiornato da più di 3 giorni"]},
  {"v": "2.4.1", "date": "2026-11-17", "title": "Avvio veloce e Firebase più stabile", "items": ["Avvio molto più veloce: il codice arriva già pronto, non viene più tradotto sul telefono a ogni apertura (tolti 2,7 MB da scaricare)", "Se la memoria locale di Firebase dà un errore interno (bug noto di Firestore), l'app ricarica da sola e per 3 giorni usa la memoria normale", "Avviso \"il servizio di accesso non risponde\" solo dopo 15 secondi, con stato della connessione", "Errore di lettura dei dati con il dettaglio esatto, un suggerimento e il pulsante Ricarica"]},
  {"v": "2.4.0", "date": "2026-11-14", "title": "Blocco dell'app e ricevute", "items": ["🔒 Blocco dell'app con 4 metodi: PIN, sequenza disegnata, impronta, volto", "PIN e sequenza uguali su tutti i dispositivi; impronta e volto si attivano su ogni dispositivo che li ha, con PIN di riserva", "Blocco all'apertura e quando torni dopo 1, 5 o 15 minuti (o subito); 5 errori = attesa di 30 secondi", "\"Ho dimenticato il codice\": nuovo accesso con Google e blocco disattivato", "Import PDF: riconosce le ricevute di un singolo pagamento (PagoPA, app Telepass, bollettini, fatture) — totale, data anche nel formato \"01 06 2025\", causale e categoria"]},
@@ -2745,7 +2746,7 @@ function NearbyStationsModal({defaultFuel, onClose}){
     try{ const d=await loadStations(c.lat,c.lng,km); setData(d); setSource("open"); setStatus("done"); }
     catch(e1){
       try{ const d=await loadStationsMise(c.lat,c.lng,km); setData(d); setSource("mise"); setStatus("done"); }
-      catch(e2){ setStatus("error"); setErrMsg(/non ancora pubblicati/.test(e1.message)?"I prezzi ufficiali non sono ancora stati scaricati: la prima volta servono qualche minuto dopo l'aggiornamento dell'app. Riprova tra poco.":"Non riesco a scaricare i prezzi: controlla la connessione e riprova."); }
+      catch(e2){ setStatus("error"); setErrMsg(/non ancora pubblicati/.test(e1.message)?"I prezzi di oggi non sono ancora stati pubblicati (li prepara il PC di casa ogni mattina). Intanto puoi usare il sito ufficiale.":"Non riesco a scaricare i prezzi: controlla la connessione e riprova."); }
     }
   };
   const locate=()=>{
@@ -2778,7 +2779,11 @@ function NearbyStationsModal({defaultFuel, onClose}){
       {status==="error"&&<div style={{textAlign:"center",color:"var(--text-faint)",padding:20}}>
         <div style={{fontSize:36}}>⚠️</div>
         <div style={{marginTop:10,fontSize:13,color:"#fca5a5",lineHeight:1.45}}>{errMsg}</div>
-        <button onClick={locate} style={{marginTop:14,background:"var(--border)",color:"#e2e8f0",border:"none",borderRadius:8,padding:"9px 16px",cursor:"pointer",fontWeight:600}}>🔄 Riprova</button>
+        <div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap",marginTop:14}}>
+          <button onClick={locate} style={{background:"var(--border)",color:"#e2e8f0",border:"none",borderRadius:8,padding:"9px 16px",cursor:"pointer",fontWeight:600}}>🔄 Riprova</button>
+          <a href="https://carburanti.mise.gov.it/" target="_blank" rel="noopener noreferrer" style={{background:"var(--blue)",color:"#fff",borderRadius:8,padding:"9px 16px",fontWeight:700,fontSize:13,textDecoration:"none"}}>🏛️ Apri Osservaprezzi</a>
+        </div>
+        <div style={{fontSize:11,color:"var(--text-faint)",marginTop:10,lineHeight:1.4}}>Osservaprezzi è il sito ufficiale del Ministero: tocca "Vicino a te" e scegli il carburante.</div>
       </div>}
       {status==="done"&&<>
         {/* riepilogo per carburante: il più vicino e il più economico */}
@@ -2822,6 +2827,7 @@ function NearbyStationsModal({defaultFuel, onClose}){
           </div>); })}
         <div style={{fontSize:10,color:"var(--text-faint)",textAlign:"center",marginTop:8,lineHeight:1.5}}>
           {source==="open"?<>Prezzi ufficiali MIMIT – Osservatorio prezzi carburanti{data.meta&&data.meta.estrazione?` · ${data.meta.estrazione.toLowerCase()}`:""} (prezzi comunicati entro le 8)</>:"Prezzi dal sito del Ministero delle Imprese e del Made in Italy"}
+          {source==="open"&&data.meta&&data.meta.generato&&(Date.now()-new Date(data.meta.generato))>2*86400000?<><br/><span style={{color:"var(--amber)"}}>⚠️ Dati di {Math.floor((Date.now()-new Date(data.meta.generato))/86400000)} giorni fa: il PC di casa non li aggiorna da un po'.</span></>:null}
           {coords&&coords.acc>500?<><br/>Posizione approssimativa (±{Math.round(coords.acc)} m)</>:null}
         </div>
       </>}

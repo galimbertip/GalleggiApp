@@ -2,6 +2,11 @@
 
 Schema **V.maggiore.minore.patch**: *maggiore* = cambi di struttura, *minore* = nuove funzioni, *patch* = correzioni.
 
+## v2.5.1 — Prezzi carburanti dal PC di casa (2026-11-25)
+- Il sito del Ministero blocca i server di GitHub (verificato): i prezzi ufficiali li pubblica ogni mattina il PC di casa con un timer automatico
+- Se i prezzi non sono disponibili, pulsante "🏛️ Apri Osservaprezzi" per il sito ufficiale
+- Avviso se i dati hanno più di 2 giorni
+
 ## v2.5.0 — Benzinai vicino a te che funziona (2026-11-25)
 - Ricerca benzinai rifatta: non usa più proxy gratuiti (chiusi o a pagamento, per questo falliva sempre)
 - Prezzi ufficiali MIMIT scaricati ogni mattina da GitHub e divisi per zona: l'app scarica solo la tua

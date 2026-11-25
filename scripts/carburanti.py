@@ -20,7 +20,7 @@ def _decode(raw):
         try: return raw.decode(enc)
         except UnicodeDecodeError: pass
 
-def download(url, tries=1):
+def download(url, tries=2):
     """Prova urllib e curl, su più indirizzi del Ministero; registra ogni tentativo."""
     import subprocess
     path = url.split(".gov.it", 1)[1]

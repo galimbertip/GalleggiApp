@@ -1,0 +1,34 @@
+{
+ "fonte": "MIMIT – Osservatorio prezzi carburanti (open data, IODL 2.0)",
+ "estrazione": "Estrazione del 2026-11-27",
+ "generato": "2026-11-28T12:43:25+00:00",
+ "distributori": 21547,
+ "zone": 212,
+ "zona_gradi": 0.5,
+ "colonne": {
+  "anagrafica": [
+   "idimpianto",
+   "gestore",
+   "bandiera",
+   "tipoimpianto",
+   "nomeimpianto",
+   "indirizzo",
+   "comune",
+   "provincia",
+   "latitudine",
+   "longitudine"
+  ],
+  "prezzi": [
+   "idimpianto",
+   "desccarburante",
+   "prezzo",
+   "isself",
+   "dtcomu"
+  ]
+ },
+ "separatori": [
+  "|",
+  "|"
+ ],
+ "formato": "[id, nome, bandiera, indirizzo, comune, lat, lng, {B|D|G|M: [self, servito]}, data_prezzi]"
+}
